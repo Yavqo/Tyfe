@@ -3,7 +3,7 @@
 use crate::ast::*;
 use crate::builtins;
 use crate::error::{Error, Result};
-use crate::value::Value;
+use crate::value::{self, Callable, ClosureVal, Value};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -67,10 +67,21 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
+        let builtin = |name: &str, variants: &[(&str, usize)]| {
+            let decl = EnumDecl {
+                name: name.to_string(),
+                variants: variants.iter().map(|(v, n)| (v.to_string(), vec![Type::Any; *n])).collect(),
+                span: Span { line: 0, col: 0 },
+            };
+            (name.to_string(), Rc::new(decl))
+        };
         Interpreter {
             fns: HashMap::new(),
             structs: HashMap::new(),
-            enums: HashMap::new(),
+            enums: HashMap::from([
+                builtin("Option", &[("Some", 1), ("None", 0)]),
+                builtin("Result", &[("Ok", 1), ("Err", 1)]),
+            ]),
             methods: HashMap::new(),
             method_names: HashSet::new(),
             consts: HashMap::new(),
@@ -174,7 +185,16 @@ impl Interpreter {
 
     fn check_type(&self, ty: &Type, span: Span) -> Result<()> {
         match ty {
-            Type::Array(inner) => self.check_type(inner, span),
+            Type::Array(inner) | Type::Option(inner) => self.check_type(inner, span),
+            Type::Result(t, e) => {
+                self.check_type(t, span)?;
+                self.check_type(e, span)
+            }
+            Type::Tuple(ts) => ts.iter().try_for_each(|t| self.check_type(t, span)),
+            Type::Fn(params, ret) => {
+                params.iter().try_for_each(|t| self.check_type(t, span))?;
+                self.check_type(ret, span)
+            }
             Type::Named(n) if !self.type_exists(n) => Err(Error::syntax(span, format!("cannot find type `{}`", n))),
             _ => Ok(()),
         }
@@ -191,7 +211,13 @@ impl Interpreter {
             return Err(Error::runtime(main.span, "`main` must not take any parameters"));
         }
         let span = main.span;
-        self.call_fn(main, None, Vec::new(), span).map_err(|c| into_error(c, span))?;
+        let (ret, _) = self.call_fn(main, None, Vec::new(), span).map_err(|c| into_error(c, span))?;
+        // `fn main() -> Result<(), E>` reports an `Err` like Rust does.
+        if let Value::Enum(en, variant, data) = &ret {
+            if en == "Result" && variant == "Err" {
+                return Err(Error::runtime(span, format!("main returned an error: {}", data[0].render(true))));
+            }
+        }
         Ok(())
     }
 
@@ -282,30 +308,49 @@ impl Interpreter {
         }
     }
 
-    /// Run one loop iteration with `var` bound to `value`.
-    fn loop_body(&mut self, var: &str, value: Value, body: &Block) -> R<Value> {
-        let mut scope = HashMap::new();
-        scope.insert(var.to_string(), Binding { value, mutable: false });
-        self.scopes.push(scope);
-        let r = self.eval_block_inner(body);
+    /// Run one loop iteration with `pattern` bound to `value`.
+    fn loop_body(&mut self, pattern: &Pattern, value: Value, body: &Block) -> R<Value> {
+        self.scopes.push(HashMap::new());
+        let r = self.bind_pattern(pattern, value, false, body_span(body)).and_then(|_| self.eval_block_inner(body));
         self.scopes.pop();
         r
+    }
+
+    /// Bind an irrefutable pattern (`x`, `(a, b)`, ...) in the current scope.
+    fn bind_pattern(&mut self, pattern: &Pattern, v: Value, mutable: bool, span: Span) -> R<()> {
+        if let Pattern::Bind(name) = pattern {
+            self.scopes.last_mut().unwrap().insert(name.clone(), Binding { value: v, mutable });
+            return Ok(());
+        }
+        let mut binds = Vec::new();
+        if !self.match_pattern(pattern, &v, &mut binds)? {
+            return Err(rt(span, format!("pattern does not match the value {}", v.render(true))));
+        }
+        let scope = self.scopes.last_mut().unwrap();
+        for (name, value) in binds {
+            scope.insert(name, Binding { value, mutable });
+        }
+        Ok(())
     }
 
     fn exec(&mut self, stmt: &Stmt) -> R<()> {
         let span = stmt.span;
         match &stmt.kind {
-            StmtKind::Let { name, mutable, ty, value } => {
+            StmtKind::Let { pattern, mutable, ty, value } => {
                 let v = self.eval(value)?;
                 if let Some(t) = ty {
                     if !v.matches(t) {
+                        let what = match pattern {
+                            Pattern::Bind(name) => format!("`{}`", name),
+                            _ => "the pattern".to_string(),
+                        };
                         return Err(rt(
                             value.span,
-                            format!("mismatched types: `{}` is declared as {} but the value is {}", name, t, v.type_name()),
+                            format!("mismatched types: {} is declared as {} but the value is {}", what, t, v.type_name()),
                         ));
                     }
                 }
-                self.scopes.last_mut().unwrap().insert(name.clone(), Binding { value: v, mutable: *mutable });
+                self.bind_pattern(pattern, v, *mutable, value.span)?;
             }
             StmtKind::Assign { target, op, value } => {
                 let v = self.eval(value)?;
@@ -338,13 +383,26 @@ impl Interpreter {
                     }
                 }
             }
-            StmtKind::For { var, iter, body } => match iter {
+            StmtKind::WhileLet { pattern, value, body } => loop {
+                let v = self.eval(value)?;
+                let mut binds = Vec::new();
+                if !self.match_pattern(pattern, &v, &mut binds)? {
+                    break;
+                }
+                self.scopes.push(to_scope(binds, false));
+                let r = self.eval_block_inner(body);
+                self.scopes.pop();
+                if loop_ctrl(r)? {
+                    break;
+                }
+            },
+            StmtKind::For { pattern, iter, body } => match iter {
                 ForIter::Range(start, end, inclusive) => {
                     let start = self.eval_int(start, "range start")?;
                     let end = self.eval_int(end, "range end")?;
                     let mut i = start;
                     while if *inclusive { i <= end } else { i < end } {
-                        if loop_ctrl(self.loop_body(var, Value::Int(i), body))? {
+                        if loop_ctrl(self.loop_body(pattern, Value::Int(i), body))? {
                             break;
                         }
                         match i.checked_add(1) {
@@ -360,7 +418,7 @@ impl Interpreter {
                         other => return Err(rt(e.span, format!("cannot iterate over a value of type {}", other.type_name()))),
                     };
                     for item in items {
-                        if loop_ctrl(self.loop_body(var, item, body))? {
+                        if loop_ctrl(self.loop_body(pattern, item, body))? {
                             break;
                         }
                     }
@@ -454,10 +512,15 @@ impl Interpreter {
             ExprKind::Float(f) => Ok(Value::Float(*f)),
             ExprKind::Str(s) => Ok(Value::Str(s.clone())),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
-            ExprKind::Var(name) => self
-                .lookup(name)
-                .cloned()
-                .ok_or_else(|| rt(span, format!("cannot find variable `{}` in this scope", name))),
+            ExprKind::Var(name) => {
+                if let Some(v) = self.lookup(name) {
+                    return Ok(v.clone());
+                }
+                match self.fns.get(name) {
+                    Some(f) => Ok(Value::Func(Callable::Named(f.clone()))),
+                    None => Err(rt(span, format!("cannot find variable `{}` in this scope", name))),
+                }
+            }
             ExprKind::Unary(op, operand) => {
                 let v = self.eval(operand)?;
                 match (op, v) {
@@ -483,9 +546,57 @@ impl Interpreter {
             }
             ExprKind::Call(name, args) => {
                 let args = self.eval_args(args)?;
+                if let Some(f) = self.lookup(name).cloned() {
+                    return self.call_value(&f, args, span);
+                }
                 match self.fns.get(name).cloned() {
                     Some(f) => Ok(self.call_fn(f, None, args, span)?.0),
                     None => Ok(builtins::call(name, args, span)?),
+                }
+            }
+            ExprKind::CallExpr(callee, args) => {
+                let f = self.eval(callee)?;
+                let args = self.eval_args(args)?;
+                self.call_value(&f, args, span)
+            }
+            ExprKind::Unit => Ok(Value::Unit),
+            ExprKind::Tuple(elems) => Ok(Value::Tuple(self.eval_args(elems)?)),
+            ExprKind::TupleField(base, i) => match self.eval(base)? {
+                Value::Tuple(mut items) if *i < items.len() => Ok(items.swap_remove(*i)),
+                Value::Tuple(items) => Err(rt(span, format!("tuple has {} elements, so `.{}` is out of range", items.len(), i))),
+                v => Err(rt(span, format!("`.{}` needs a tuple, got {}", i, v.type_name()))),
+            },
+            ExprKind::Closure(def) => {
+                let env = def
+                    .captures
+                    .iter()
+                    .filter_map(|n| self.lookup(n).map(|v| (n.clone(), v.clone())))
+                    .collect();
+                Ok(Value::Func(Callable::Closure(Rc::new(ClosureVal { def: def.clone(), env }))))
+            }
+            ExprKind::Try(inner) => match self.eval(inner)? {
+                Value::Enum(en, variant, mut data) if en == "Option" || en == "Result" => {
+                    if variant == "Some" || variant == "Ok" {
+                        Ok(data.pop().unwrap())
+                    } else {
+                        // Return the `None` / `Err(e)` from the enclosing function.
+                        Err(Ctrl::Return(Value::Enum(en, variant, data)))
+                    }
+                }
+                v => Err(rt(span, format!("`?` can only be used on an Option or Result, got {}", v.type_name()))),
+            },
+            ExprKind::IfLet(pattern, value, then, else_) => {
+                let v = self.eval(value)?;
+                let mut binds = Vec::new();
+                if self.match_pattern(pattern, &v, &mut binds)? {
+                    self.scopes.push(to_scope(binds, false));
+                    let r = self.eval_block(then);
+                    self.scopes.pop();
+                    r
+                } else if let Some(else_) = else_ {
+                    self.eval(else_)
+                } else {
+                    Ok(Value::Unit)
                 }
             }
             ExprKind::MethodCall(recv, name, args) => self.eval_method_call(recv, name, args, span),
@@ -543,8 +654,7 @@ impl Interpreter {
                     if !self.match_pattern(&arm.pattern, &v, &mut binds)? {
                         continue;
                     }
-                    let scope = binds.into_iter().map(|(n, value)| (n, Binding { value, mutable: false })).collect();
-                    self.scopes.push(scope);
+                    self.scopes.push(to_scope(binds, false));
                     let result = self.eval_arm(arm);
                     self.scopes.pop();
                     if let Some(v) = result? {
@@ -636,6 +746,18 @@ impl Interpreter {
                     _ => false,
                 }
             }
+            Pattern::Tuple(pats) => match v {
+                Value::Tuple(items) if items.len() == pats.len() => {
+                    for (p, item) in pats.iter().zip(items) {
+                        if !self.match_pattern(p, item, binds)? {
+                            return Ok(false);
+                        }
+                    }
+                    true
+                }
+                Value::Unit => pats.is_empty(),
+                _ => false,
+            },
             Pattern::Or(alts) => {
                 for alt in alts {
                     let mark = binds.len();
@@ -657,6 +779,9 @@ impl Interpreter {
             return Ok(builtins::method_mut(place, name, args, span)?);
         }
         let v = self.eval(recv)?;
+        if let Some(r) = self.higher_order_method(&v, name, &args, span) {
+            return r;
+        }
         let user_method = match &v {
             Value::Struct(t, _) | Value::Enum(t, _, _) => self.methods.get(&(t.clone(), name.to_string())).cloned(),
             _ => None,
@@ -688,6 +813,189 @@ impl Interpreter {
             }
             None => Ok(builtins::method(v, name, args, span)?),
         }
+    }
+
+    /// Call a function value (named function or closure).
+    fn call_value(&mut self, f: &Value, args: Vec<Value>, span: Span) -> R<Value> {
+        match f {
+            Value::Func(Callable::Named(decl)) => Ok(self.call_fn(decl.clone(), None, args, span)?.0),
+            Value::Func(Callable::Closure(c)) => self.call_closure(c.clone(), args, span),
+            v => Err(rt(span, format!("a value of type {} is not a function", v.type_name()))),
+        }
+    }
+
+    fn call_closure(&mut self, c: Rc<ClosureVal>, args: Vec<Value>, span: Span) -> R<Value> {
+        let def = &c.def;
+        if args.len() != def.params.len() {
+            return Err(rt(span, format!("closure takes {} argument(s) but {} were given", def.params.len(), args.len())));
+        }
+        let mut frame: HashMap<String, Binding> =
+            c.env.iter().map(|(n, v)| (n.clone(), Binding { value: v.clone(), mutable: false })).collect();
+        for ((name, ty), v) in def.params.iter().zip(args) {
+            if let Some(t) = ty {
+                if !v.matches(t) {
+                    return Err(rt(span, format!("mismatched types: closure parameter `{}` expects {}, got {}", name, t, v.type_name())));
+                }
+            }
+            frame.insert(name.clone(), Binding { value: v, mutable: false });
+        }
+        if self.depth >= MAX_CALL_DEPTH {
+            return Err(rt(span, format!("stack overflow: more than {} nested calls", MAX_CALL_DEPTH)));
+        }
+        let saved = std::mem::replace(&mut self.scopes, vec![frame]);
+        self.depth += 1;
+        let result = self.eval(&def.body);
+        self.depth -= 1;
+        self.scopes = saved;
+        let ret = match result {
+            Ok(v) | Err(Ctrl::Return(v)) => v,
+            Err(Ctrl::Break(_) | Ctrl::Continue) => return Err(rt(def.body.span, "`break`/`continue` outside of a loop")),
+            Err(e) => return Err(e),
+        };
+        if let Some(t) = &def.ret {
+            if !ret.matches(t) {
+                return Err(rt(span, format!("mismatched types: closure should return {}, but returned {}", t, ret.type_name())));
+            }
+        }
+        Ok(ret)
+    }
+
+    /// Methods that take a function argument: `map`, `filter`, `fold`, ...
+    /// Returns None if `name` isn't one of them for this receiver.
+    fn higher_order_method(&mut self, recv: &Value, name: &str, args: &[Value], span: Span) -> Option<R<Value>> {
+        let expect_args = |n: usize| -> R<()> {
+            if args.len() != n {
+                return Err(rt(span, format!("`{}` takes {} argument(s) but {} were given", name, n, args.len())));
+            }
+            Ok(())
+        };
+        let truthy = |v: Value| -> R<bool> {
+            match v {
+                Value::Bool(b) => Ok(b),
+                v => Err(rt(span, format!("the function passed to `{}` must return a bool, got {}", name, v.type_name()))),
+            }
+        };
+        let items = match recv {
+            Value::Array(items) => items,
+            Value::Enum(en, variant, data) if en == "Option" || en == "Result" => {
+                if name != "map" && name != "and_then" && name != "unwrap_or_else" {
+                    return None;
+                }
+                let f = args.first().cloned();
+                return Some((|| {
+                    expect_args(1)?;
+                    let f = f.unwrap();
+                    let has_value = variant == "Some" || variant == "Ok";
+                    match (name, has_value) {
+                        ("map", true) => {
+                            let out = self.call_value(&f, data.clone(), span)?;
+                            Ok(Value::Enum(en.clone(), variant.clone(), vec![out]))
+                        }
+                        ("and_then", true) => self.call_value(&f, data.clone(), span),
+                        ("unwrap_or_else", true) => Ok(data[0].clone()),
+                        ("unwrap_or_else", false) => self.call_value(&f, data.clone(), span),
+                        _ => Ok(recv.clone()),
+                    }
+                })());
+            }
+            _ => return None,
+        };
+        let is_hof = matches!(
+            name,
+            "map" | "filter" | "for_each" | "fold" | "any" | "all" | "count" | "find" | "position" | "sort_by_key"
+                | "min_by_key" | "max_by_key"
+        );
+        if !is_hof {
+            return None;
+        }
+        Some((|| -> R<Value> {
+            match name {
+                "map" => {
+                    expect_args(1)?;
+                    let mut out = Vec::with_capacity(items.len());
+                    for v in items {
+                        out.push(self.call_value(&args[0], vec![v.clone()], span)?);
+                    }
+                    Ok(Value::Array(out))
+                }
+                "filter" => {
+                    expect_args(1)?;
+                    let mut out = Vec::new();
+                    for v in items {
+                        if truthy(self.call_value(&args[0], vec![v.clone()], span)?)? {
+                            out.push(v.clone());
+                        }
+                    }
+                    Ok(Value::Array(out))
+                }
+                "for_each" => {
+                    expect_args(1)?;
+                    for v in items {
+                        self.call_value(&args[0], vec![v.clone()], span)?;
+                    }
+                    Ok(Value::Unit)
+                }
+                "fold" => {
+                    expect_args(2)?;
+                    let mut acc = args[0].clone();
+                    for v in items {
+                        acc = self.call_value(&args[1], vec![acc, v.clone()], span)?;
+                    }
+                    Ok(acc)
+                }
+                "any" | "all" => {
+                    expect_args(1)?;
+                    let want = name == "any";
+                    for v in items {
+                        if truthy(self.call_value(&args[0], vec![v.clone()], span)?)? == want {
+                            return Ok(Value::Bool(want));
+                        }
+                    }
+                    Ok(Value::Bool(!want))
+                }
+                "count" => {
+                    expect_args(1)?;
+                    let mut n = 0;
+                    for v in items {
+                        if truthy(self.call_value(&args[0], vec![v.clone()], span)?)? {
+                            n += 1;
+                        }
+                    }
+                    Ok(Value::Int(n))
+                }
+                "find" | "position" => {
+                    expect_args(1)?;
+                    for (i, v) in items.iter().enumerate() {
+                        if truthy(self.call_value(&args[0], vec![v.clone()], span)?)? {
+                            let found = if name == "find" { v.clone() } else { Value::Int(i as i64) };
+                            return Ok(value::some(found));
+                        }
+                    }
+                    Ok(value::none())
+                }
+                "sort_by_key" | "min_by_key" | "max_by_key" => {
+                    expect_args(1)?;
+                    let mut keys = Vec::with_capacity(items.len());
+                    for v in items {
+                        keys.push(self.call_value(&args[0], vec![v.clone()], span)?);
+                    }
+                    if let Some(k) = keys.windows(2).find(|w| value::compare(&w[0], &w[1]).is_none()) {
+                        return Err(rt(span, format!("cannot compare keys of type {} and {}", k[0].type_name(), k[1].type_name())));
+                    }
+                    let cmp = |a: &usize, b: &usize| value::compare(&keys[*a], &keys[*b]).unwrap();
+                    let mut order: Vec<usize> = (0..items.len()).collect();
+                    // Stable, so equal keys keep their original order (like Rust).
+                    order.sort_by(cmp);
+                    Ok(match name {
+                        "sort_by_key" => Value::Array(order.iter().map(|&i| items[i].clone()).collect()),
+                        // First minimum and last maximum, matching Rust's iterator methods.
+                        "min_by_key" => value::option((0..items.len()).min_by(cmp).map(|i| items[i].clone())),
+                        _ => value::option((0..items.len()).max_by(cmp).map(|i| items[i].clone())),
+                    })
+                }
+                _ => unreachable!(),
+            }
+        })())
     }
 
     /// `Type::item` (args = None) or `Type::item(args)`.
@@ -837,4 +1145,16 @@ fn mismatch(op: BinOp, l: &Value, r: &Value, span: Span) -> Error {
         _ => "",
     };
     Error::runtime(span, format!("cannot apply `{}` to {} and {}{}", op, l.type_name(), r.type_name(), hint))
+}
+
+fn to_scope(binds: Vec<(String, Value)>, mutable: bool) -> HashMap<String, Binding> {
+    binds.into_iter().map(|(n, value)| (n, Binding { value, mutable })).collect()
+}
+
+fn body_span(b: &Block) -> Span {
+    b.stmts
+        .first()
+        .map(|s| s.span)
+        .or(b.tail.as_ref().map(|e| e.span))
+        .unwrap_or(Span { line: 0, col: 0 })
 }

@@ -235,3 +235,74 @@ fn new_feature_errors() {
     fails_with("fn f(&self) {} fn main() {}", "only allowed in `impl` blocks");
     fails_with("struct C {} impl C { fn new() -> C { C {} } } fn main() { C::new().new(); }", "is an associated function, not a method");
 }
+
+#[test]
+fn option_result_and_try() {
+    let src = "fn half(n: int) -> Result<int, str> {
+        if n % 2 == 1 { return Err(format(\"{} is odd\", n)); }
+        Ok(n / 2)
+    }
+    fn quarter(n: int) -> Result<int, str> { let h = half(n)?; half(h) }
+    fn first_neg(xs: [int]) -> Option<int> { xs.find(|x| x < 0) }
+    fn main() {
+        println(\"{:?} {:?} {:?}\", quarter(20), quarter(6), quarter(7));
+        println(\"{:?} {:?}\", first_neg([1, -2, -3]), first_neg([1]));
+        let mut s = [1, 2];
+        let mut out = 0;
+        while let Some(x) = s.pop() { out = out * 10 + x; }
+        println(out);
+        if let Ok(n) = \"12\".parse_int() { println(n + 1); }
+        println(\"{} {}\", None.unwrap_or(5), Some(1).map(|x| x + 1).unwrap());
+    }";
+    assert_eq!(ok(src), "Ok(5) Err(\"3 is odd\") Err(\"7 is odd\")\nSome(-2) None\n21\n13\n5 2\n");
+}
+
+#[test]
+fn closures_and_function_values() {
+    let src = "fn twice(f: fn(int) -> int, x: int) -> int { f(f(x)) }
+    fn adder(n: int) -> fn(int) -> int { |x| x + n }
+    fn sq(x: int) -> int { x * x }
+    fn main() {
+        let k = 3;
+        let times_k = |x| x * k;
+        println(\"{} {} {} {}\", twice(times_k, 2), twice(sq, 3), adder(5)(1), [1, 2].map(sq));
+        let xs = [5, 2, 8, 1];
+        println(xs.iter().filter(|x| x > 1).map(|x| x * 10).collect());
+        println(\"{} {} {} {}\", xs.fold(0, |a, b| a + b), xs.any(|x| x == 8), xs.all(|x| x > 1), xs.count(|x| x > 1));
+        println(\"{:?} {:?} {:?}\", xs.position(|x| x == 8), xs.sorted(), xs.min());
+        println(\"{:?}\", [\"ccc\", \"a\", \"bb\"].sort_by_key(|s| s.len()));
+    }";
+    assert_eq!(ok(src), "18 81 6 [1, 4]\n[50, 20, 80]\n16 true false 3\nSome(2) [1, 2, 5, 8] Some(1)\n[\"a\", \"bb\", \"ccc\"]\n");
+}
+
+#[test]
+fn tuples_and_destructuring() {
+    let src = "fn swap(p: (int, str)) -> (str, int) { (p.1, p.0) }
+    fn main() {
+        let (a, b) = swap((1, \"x\"));
+        println(\"{} {}\", a, b);
+        let mut total = 0;
+        for (i, v) in [10, 20].enumerate() { total += i * v; }
+        println(total);
+        let nested = ((1, 2), 3);
+        println(nested.0.1);
+        let m = match (1, 0) { (0, _) => \"a\", (_, 0) => \"b\", _ => \"c\" };
+        println(\"{} {:?}\", m, [1, 2].zip([\"x\", \"y\"]));
+    }";
+    assert_eq!(ok(src), "x 1\n20\n2\nb [(1, \"x\"), (2, \"y\")]\n");
+}
+
+#[test]
+fn newer_feature_errors() {
+    fails_with("fn main() { let x: Option<int> = None; x.unwrap(); }", "called `unwrap()` on a `None` value");
+    fails_with("fn main() { let r: Result<int, str> = Err(\"bad\"); r.unwrap(); }", "on an `Err` value: \"bad\"");
+    fails_with("fn main() -> Result<(), str> { let n = \"x\".parse_int()?; Ok(()) }", "main returned an error");
+    fails_with("fn main() { let x = 5; let y = x?; }", "`?` can only be used on an Option or Result");
+    fails_with("fn main() { let x: Option<int> = Some(\"a\"); }", "declared as Option<int> but the value is Option<str>");
+    fails_with("fn main() { let (a, b) = (1, 2, 3); }", "pattern does not match");
+    fails_with("fn main() { let t = (1, 2); println(t.5); }", "out of range");
+    fails_with("fn main() { let x = 5; x(1); }", "is not a function");
+    fails_with("fn main() { let f = |a, b| a + b; f(1); }", "closure takes 2 argument(s) but 1 were given");
+    fails_with("fn ap(f: fn(int) -> int) -> int { f(1) } fn main() { ap(|a, b| a); }", "expects fn(int) -> int, got fn(_, _)");
+    fails_with("fn main() { [1].filter(|x| x); }", "must return a bool");
+}

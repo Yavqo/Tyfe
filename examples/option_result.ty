@@ -1,0 +1,58 @@
+// Option, Result and the `?` operator.
+
+fn find_index(xs: [str], target: str) -> Option<int> {
+    for (i, x) in xs.enumerate() {
+        if x == target {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn safe_divide(a: int, b: int) -> Result<int, str> {
+    if b == 0 {
+        return Err("division by zero");
+    }
+    Ok(a / b)
+}
+
+// `?` unwraps an Ok value, or returns the Err from this function early.
+fn parse_and_divide(a: str, b: str) -> Result<int, str> {
+    let x = a.parse_int()?;
+    let y = b.parse_int()?;
+    let q = safe_divide(x, y)?;
+    Ok(q)
+}
+
+fn main() {
+    let names = ["ada", "grace", "linus"];
+
+    match find_index(names, "grace") {
+        Some(i) => println("found grace at {}", i),
+        None => println("no grace"),
+    }
+
+    // `if let` handles just the case you care about.
+    if let Some(i) = find_index(names, "bob") {
+        println("found bob at {}", i);
+    } else {
+        println("bob is not here");
+    }
+
+    println("{:?}", parse_and_divide("84", "2"));
+    println("{:?}", parse_and_divide("84", "0"));
+    println("{:?}", parse_and_divide("eight", "2"));
+
+    // Handy methods
+    let maybe: Option<int> = None;
+    println("unwrap_or: {}", maybe.unwrap_or(-1));
+    println("map: {:?}", Some(20).map(|x| x + 1));
+    println("is_ok: {}", safe_divide(1, 1).is_ok());
+
+    // Array methods that might find nothing return Options.
+    let mut stack = [1, 2, 3];
+    while let Some(top) = stack.pop() {
+        print("{} ", top);
+    }
+    println("(empty: {})", stack.is_empty());
+}

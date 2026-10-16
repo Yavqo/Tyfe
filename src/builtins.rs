@@ -2,7 +2,7 @@
 
 use crate::ast::Span;
 use crate::error::{Error, Result};
-use crate::value::Value;
+use crate::value::{self, compare, Value};
 use std::io::{self, BufRead, Write};
 
 fn arity(name: &str, args: &[Value], expected: usize, span: Span) -> Result<()> {
@@ -227,7 +227,7 @@ pub fn call(name: &str, args: Vec<Value>, span: Span) -> Result<Value> {
 
 /// Methods that modify the receiver in place.
 pub fn is_mutating_method(name: &str) -> bool {
-    matches!(name, "push" | "pop" | "insert" | "remove" | "clear")
+    matches!(name, "push" | "pop" | "insert" | "remove" | "clear" | "sort")
 }
 
 fn to_index(v: &Value, len: usize, allow_end: bool, span: Span) -> Result<usize> {
@@ -285,7 +285,7 @@ pub fn method_mut(recv: &mut Value, name: &str, args: Vec<Value>, span: Span) ->
         }
         "pop" => {
             arity(name, &args, 0, span)?;
-            items.pop().ok_or_else(|| Error::runtime(span, "cannot pop from an empty array"))
+            Ok(value::option(items.pop()))
         }
         "insert" => {
             arity(name, &args, 2, span)?;
@@ -305,13 +305,132 @@ pub fn method_mut(recv: &mut Value, name: &str, args: Vec<Value>, span: Span) ->
             items.clear();
             Ok(Value::Unit)
         }
+        "sort" => {
+            arity(name, &args, 0, span)?;
+            *items = sort_values(std::mem::take(items), span)?;
+            Ok(Value::Unit)
+        }
         _ => Err(Error::runtime(span, format!("no method `{}` on type {}", name, tn))),
+    }
+}
+
+pub fn sort_values(mut items: Vec<Value>, span: Span) -> Result<Vec<Value>> {
+    for w in items.windows(2) {
+        if compare(&w[0], &w[1]).is_none() {
+            return Err(Error::runtime(
+                span,
+                format!("cannot sort values of type {} (only ints, floats, strings, bools and tuples of them)", w[0].type_name()),
+            ));
+        }
+    }
+    items.sort_by(|a, b| compare(a, b).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(items)
+}
+
+fn extreme(items: &[Value], want: std::cmp::Ordering, span: Span) -> Result<Value> {
+    let mut best: Option<&Value> = None;
+    for v in items {
+        best = match best {
+            None => Some(v),
+            Some(b) => match compare(v, b) {
+                Some(o) if o == want => Some(v),
+                Some(_) => Some(b),
+                None => return Err(Error::runtime(span, format!("cannot compare values of type {}", v.type_name()))),
+            },
+        };
+    }
+    Ok(value::option(best.cloned()))
+}
+
+fn option_result_method(recv: Value, name: &str, args: Vec<Value>, span: Span) -> Result<Value> {
+    let Value::Enum(en, variant, mut data) = recv else { unreachable!() };
+    let has_value = variant == "Some" || variant == "Ok";
+    let payload = data.pop();
+    match name {
+        "is_some" | "is_ok" => Ok(Value::Bool(has_value)),
+        "is_none" | "is_err" => Ok(Value::Bool(!has_value)),
+        "unwrap" | "expect" => {
+            if has_value {
+                return Ok(payload.unwrap());
+            }
+            let msg = if name == "expect" {
+                arity(name, &args, 1, span)?;
+                args[0].render(false)
+            } else if variant == "None" {
+                "called `unwrap()` on a `None` value".to_string()
+            } else {
+                format!("called `unwrap()` on an `Err` value: {}", payload.unwrap().render(true))
+            };
+            Err(Error::runtime(span, format!("panicked: {}", msg)))
+        }
+        "unwrap_or" => {
+            arity(name, &args, 1, span)?;
+            Ok(if has_value { payload.unwrap() } else { args.into_iter().next().unwrap() })
+        }
+        "ok" if en == "Result" => Ok(value::option(if has_value { payload } else { None })),
+        "err" if en == "Result" => Ok(value::option(if has_value { None } else { payload })),
+        _ => Err(Error::runtime(span, format!("no method `{}` on type {}", name, en))),
     }
 }
 
 pub fn method(recv: Value, name: &str, args: Vec<Value>, span: Span) -> Result<Value> {
     let no_method = |recv: &Value| Error::runtime(span, format!("no method `{}` on type {}", name, recv.type_name()));
+    if let Value::Enum(en, _, _) = &recv {
+        if (en == "Option" || en == "Result") && name != "to_string" {
+            return option_result_method(recv, name, args, span);
+        }
+    }
     match (name, &recv) {
+        ("iter" | "into_iter" | "collect" | "clone", _) => Ok(recv),
+        ("get", Value::Array(items)) => {
+            arity(name, &args, 1, span)?;
+            Ok(match &args[0] {
+                Value::Int(i) if *i >= 0 => value::option(items.get(*i as usize).cloned()),
+                Value::Int(_) => value::none(),
+                v => return Err(type_err(span, "`get` index", v)),
+            })
+        }
+        ("first", Value::Array(items)) => Ok(value::option(items.first().cloned())),
+        ("last", Value::Array(items)) => Ok(value::option(items.last().cloned())),
+        ("enumerate", Value::Array(items)) => Ok(Value::Array(
+            items.iter().enumerate().map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v.clone()])).collect(),
+        )),
+        ("zip", Value::Array(items)) => {
+            arity(name, &args, 1, span)?;
+            match &args[0] {
+                Value::Array(other) => Ok(Value::Array(
+                    items.iter().zip(other).map(|(a, b)| Value::Tuple(vec![a.clone(), b.clone()])).collect(),
+                )),
+                v => Err(type_err(span, "`zip`", v)),
+            }
+        }
+        ("sum", Value::Array(items)) => {
+            let mut int_total: i64 = 0;
+            let mut float_total: Option<f64> = None;
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        int_total = int_total
+                            .checked_add(*n)
+                            .ok_or_else(|| Error::runtime(span, "attempt to compute `sum` with overflow"))?
+                    }
+                    Value::Float(f) => *float_total.get_or_insert(0.0) += f,
+                    v => return Err(type_err(span, "`sum`", v)),
+                }
+            }
+            Ok(float_total.map_or(Value::Int(int_total), Value::Float))
+        }
+        ("sorted", Value::Array(items)) => Ok(Value::Array(sort_values(items.clone(), span)?)),
+        ("min", Value::Array(items)) => extreme(items, std::cmp::Ordering::Less, span),
+        ("max", Value::Array(items)) => extreme(items, std::cmp::Ordering::Greater, span),
+        ("parse_int", Value::Str(s)) => Ok(match s.trim().parse::<i64>() {
+            Ok(n) => value::ok(Value::Int(n)),
+            Err(_) => value::err(Value::Str(format!("invalid int: {:?}", s))),
+        }),
+        ("parse_float", Value::Str(s)) => Ok(match s.trim().parse::<f64>() {
+            Ok(f) => value::ok(Value::Float(f)),
+            Err(_) => value::err(Value::Str(format!("invalid float: {:?}", s))),
+        }),
         ("to_string", _) => {
             arity(name, &args, 0, span)?;
             Ok(Value::Str(recv.render(false)))

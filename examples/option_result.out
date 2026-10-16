@@ -1,0 +1,9 @@
+found grace at 1
+bob is not here
+Ok(42)
+Err("division by zero")
+Err("invalid int: \"eight\"")
+unwrap_or: -1
+map: Some(21)
+is_ok: true
+3 2 1 (empty: true)

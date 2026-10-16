@@ -1,6 +1,7 @@
 use crate::ast::*;
 use crate::error::{Error, Result};
 use crate::lexer::{lex, Tok, Token};
+use std::rc::Rc;
 
 /// One top-level entry typed into the REPL.
 pub enum ReplEntry {
@@ -33,6 +34,8 @@ pub fn parse_repl(src: &str) -> Result<Vec<ReplEntry>> {
     Ok(entries)
 }
 
+// Short-lived parse result, so the size difference between variants does not matter.
+#[allow(clippy::large_enum_variant)]
 enum Parsed {
     Stmt(Stmt),
     /// The final expression of a block, with no `;` — the block's value.
@@ -316,8 +319,18 @@ impl Parser {
             return Ok(Type::Array(Box::new(inner)));
         }
         if self.eat(&Tok::LParen) {
-            self.expect(Tok::RParen, "in unit type `()`")?;
-            return Ok(Type::Unit);
+            let mut types = self.list(Tok::RParen, "to close tuple type", |p| p.ty())?;
+            return Ok(match types.len() {
+                0 => Type::Unit,
+                1 => types.pop().unwrap(),
+                _ => Type::Tuple(types),
+            });
+        }
+        if self.eat(&Tok::Fn) {
+            self.expect(Tok::LParen, "after `fn` in a function type")?;
+            let params = self.list(Tok::RParen, "to close function type", |p| p.ty())?;
+            let ret = if self.eat(&Tok::Arrow) { self.ty()? } else { Type::Unit };
+            return Ok(Type::Fn(params, Box::new(ret)));
         }
         let name = match self.peek().clone() {
             Tok::Ident(name) => {
@@ -331,6 +344,20 @@ impl Parser {
             "float" | "f64" => Type::Float,
             "bool" => Type::Bool,
             "str" | "String" => Type::Str,
+            "Option" if self.at(&Tok::Lt) => {
+                self.advance();
+                let t = self.ty()?;
+                self.expect(Tok::Gt, "to close `Option<...>`")?;
+                Type::Option(Box::new(t))
+            }
+            "Result" if self.at(&Tok::Lt) => {
+                self.advance();
+                let t = self.ty()?;
+                self.expect(Tok::Comma, "in `Result<T, E>`")?;
+                let e = self.ty()?;
+                self.expect(Tok::Gt, "to close `Result<...>`")?;
+                Type::Result(Box::new(t), Box::new(e))
+            }
             _ => Type::Named(self.resolve_self(name, span)?),
         })
     }
@@ -366,22 +393,36 @@ impl Parser {
             Tok::Let => {
                 self.advance();
                 let mutable = self.eat(&Tok::Mut);
-                let (name, _) = self.ident("variable name after `let`")?;
+                if !matches!(self.peek(), Tok::Ident(_) | Tok::LParen) {
+                    return Err(Error::syntax(
+                        self.span(),
+                        format!("expected variable name after `let`, found {}", self.peek().describe()),
+                    ));
+                }
+                let pattern = self.pattern()?;
                 let ty = if self.eat(&Tok::Colon) { Some(self.ty()?) } else { None };
                 self.expect(Tok::Eq, "in `let` (variables must be initialized)")?;
                 let value = self.expr()?;
                 self.expect(Tok::Semi, "after `let` statement")?;
-                StmtKind::Let { name, mutable, ty, value }
+                StmtKind::Let { pattern, mutable, ty, value }
             }
             Tok::While => {
                 self.advance();
-                let cond = self.with_struct(false, |p| p.expr())?;
-                let body = self.block()?;
-                StmtKind::While { cond, body }
+                if self.eat(&Tok::Let) {
+                    let pattern = self.pattern()?;
+                    self.expect(Tok::Eq, "in `while let`")?;
+                    let value = self.with_struct(false, |p| p.expr())?;
+                    let body = self.block()?;
+                    StmtKind::WhileLet { pattern, value, body }
+                } else {
+                    let cond = self.with_struct(false, |p| p.expr())?;
+                    let body = self.block()?;
+                    StmtKind::While { cond, body }
+                }
             }
             Tok::For => {
                 self.advance();
-                let (var, _) = self.ident("loop variable after `for`")?;
+                let pattern = self.pattern()?;
                 self.expect(Tok::In, "after loop variable")?;
                 let iter = self.with_struct(false, |p| {
                     let start = p.expr()?;
@@ -394,7 +435,7 @@ impl Parser {
                     }
                 })?;
                 let body = self.block()?;
-                StmtKind::For { var, iter, body }
+                StmtKind::For { pattern, iter, body }
             }
             Tok::Semi => {
                 // A stray `;` is an empty statement.
@@ -512,7 +553,17 @@ impl Parser {
                 let idx = self.with_struct(true, |p| p.expr())?;
                 self.expect(Tok::RBracket, "to close index")?;
                 e = Expr { kind: ExprKind::Index(Box::new(e), Box::new(idx)), span };
+            } else if self.eat(&Tok::Question) {
+                e = Expr { kind: ExprKind::Try(Box::new(e)), span };
+            } else if self.at(&Tok::LParen) {
+                let args = self.args()?;
+                e = Expr { kind: ExprKind::CallExpr(Box::new(e), args), span };
             } else if self.eat(&Tok::Dot) {
+                if let Tok::Int(n) = *self.peek() {
+                    self.advance();
+                    e = Expr { kind: ExprKind::TupleField(Box::new(e), n as usize), span };
+                    continue;
+                }
                 let (name, nspan) = self.ident("field or method name after `.`")?;
                 if self.at(&Tok::LParen) {
                     let args = self.args()?;
@@ -563,6 +614,13 @@ impl Parser {
 
     fn if_expr(&mut self) -> Result<Expr> {
         let span = self.expect(Tok::If, "")?.span;
+        let pattern = if self.eat(&Tok::Let) {
+            let pat = self.pattern()?;
+            self.expect(Tok::Eq, "in `if let`")?;
+            Some(pat)
+        } else {
+            None
+        };
         let cond = self.with_struct(false, |p| p.expr())?;
         let then = self.block()?;
         let else_ = if self.eat(&Tok::Else) {
@@ -575,7 +633,11 @@ impl Parser {
         } else {
             None
         };
-        Ok(Expr { kind: ExprKind::If(Box::new(cond), then, else_), span })
+        let kind = match pattern {
+            Some(pat) => ExprKind::IfLet(Box::new(pat), Box::new(cond), then, else_),
+            None => ExprKind::If(Box::new(cond), then, else_),
+        };
+        Ok(Expr { kind, span })
     }
 
     fn match_expr(&mut self) -> Result<Expr> {
@@ -668,6 +730,21 @@ impl Parser {
                 self.advance();
                 Ok(Pattern::Wildcard)
             }
+            Tok::LParen => {
+                self.advance();
+                Ok(Pattern::Tuple(self.list(Tok::RParen, "to close tuple pattern", |p| p.pattern())?))
+            }
+            Tok::Ident(name) if name == "None" => {
+                self.advance();
+                Ok(Pattern::Variant { enum_name: "Option".into(), variant: name, fields: None, span })
+            }
+            Tok::Ident(name) if builtin_variant(&name).is_some() && self.peek_at(1) == &Tok::LParen => {
+                self.advance();
+                self.advance();
+                let fields = self.list(Tok::RParen, "to close pattern", |p| p.pattern())?;
+                let enum_name = builtin_variant(&name).unwrap().to_string();
+                Ok(Pattern::Variant { enum_name, variant: name, fields: Some(fields), span })
+            }
             Tok::Ident(name) => {
                 self.advance();
                 if !self.eat(&Tok::ColonColon) {
@@ -684,6 +761,42 @@ impl Parser {
             }
             other => Err(Error::syntax(span, format!("expected a pattern, found {}", other.describe()))),
         }
+    }
+
+    /// `|a, b: int| expr` or `|x| -> int { ... }` or `|| expr`
+    fn closure(&mut self) -> Result<Expr> {
+        let span = self.span();
+        let mut params: Vec<(String, Option<Type>)> = Vec::new();
+        if !self.eat(&Tok::OrOr) {
+            self.expect(Tok::Pipe, "")?;
+            params = self.list(Tok::Pipe, "to close closure parameters", |p| {
+                let (name, _) = p.ident("closure parameter name")?;
+                let ty = if p.eat(&Tok::Colon) { Some(p.ty()?) } else { None };
+                Ok((name, ty))
+            })?;
+        }
+        let ret = if self.eat(&Tok::Arrow) { Some(self.ty()?) } else { None };
+        let start = self.pos;
+        let body = if ret.is_some() {
+            if !self.at(&Tok::LBrace) {
+                return Err(Error::syntax(self.span(), "a closure with a return type needs a `{ }` body"));
+            }
+            self.block_expr()?
+        } else {
+            self.with_struct(true, |p| p.expr())?
+        };
+        // Every identifier in the body is a capture candidate; the ones that
+        // name a variable in scope when the closure is created get copied in.
+        let mut captures: Vec<String> = Vec::new();
+        for t in &self.toks[start..self.pos] {
+            if let Tok::Ident(n) = &t.tok {
+                if !captures.contains(n) && !params.iter().any(|(p, _)| p == n) {
+                    captures.push(n.clone());
+                }
+            }
+        }
+        let def = ClosureDef { params, ret, body, captures };
+        Ok(Expr { kind: ExprKind::Closure(Rc::new(def)), span })
     }
 
     fn primary(&mut self) -> Result<Expr> {
@@ -724,6 +837,15 @@ impl Parser {
                 self.advance();
                 ExprKind::Continue
             }
+            Tok::Ident(name) if name == "None" && self.peek_at(1) != &Tok::ColonColon => {
+                self.advance();
+                ExprKind::Path("Option".into(), name)
+            }
+            Tok::Ident(name) if builtin_variant(&name).is_some() && self.peek_at(1) == &Tok::LParen => {
+                self.advance();
+                let enum_name = builtin_variant(&name).unwrap().to_string();
+                ExprKind::PathCall(enum_name, name, self.args()?)
+            }
             Tok::Ident(name) => {
                 if self.peek_at(1) == &Tok::ColonColon {
                     let ty = self.resolve_self(name, span)?;
@@ -757,10 +879,20 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
-                let e = self.with_struct(true, |p| p.expr())?;
-                self.expect(Tok::RParen, "to close parenthesis")?;
-                return Ok(e);
+                if self.eat(&Tok::RParen) {
+                    ExprKind::Unit
+                } else {
+                    let first = self.with_struct(true, |p| p.expr())?;
+                    if !self.eat(&Tok::Comma) {
+                        self.expect(Tok::RParen, "to close parenthesis")?;
+                        return Ok(first);
+                    }
+                    let mut elems = vec![first];
+                    elems.extend(self.with_struct(true, |p| p.list(Tok::RParen, "to close tuple", |p| p.expr()))?);
+                    ExprKind::Tuple(elems)
+                }
             }
+            Tok::Pipe | Tok::OrOr => return self.closure(),
             Tok::LBracket => {
                 self.advance();
                 let elems = self.with_struct(true, |p| p.list(Tok::RBracket, "to close array literal", |p| p.expr()))?;
@@ -771,5 +903,14 @@ impl Parser {
             }
         };
         Ok(Expr { kind, span })
+    }
+}
+
+/// `Some`/`Ok`/`Err` can be written without their enum name, like in Rust.
+fn builtin_variant(name: &str) -> Option<&'static str> {
+    match name {
+        "Some" => Some("Option"),
+        "Ok" | "Err" => Some("Result"),
+        _ => None,
     }
 }

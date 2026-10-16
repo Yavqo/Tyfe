@@ -1,6 +1,6 @@
 # Tyfe
 
-Tyfe is a small programming language with Rust-like syntax. It has `fn`, `let` / `let mut`, type annotations, structs with `impl` methods, enums with `match`, and arrays. The goal is to feel like Rust and C++ while staying easy to learn.
+Tyfe is a small programming language with Rust-like syntax. It has `fn`, `let` / `let mut`, type annotations, structs with `impl` methods, enums with `match`, `Option` / `Result` with `?`, closures, tuples and arrays. The goal is to feel like Rust and C++ while staying easy to learn.
 
 ```rust
 struct Point {
@@ -57,6 +57,10 @@ count += 1;               // also -=, *=, /=, %=
 | `[T]`       | `[1, 2, 3]`            | arrays; all elements share one type     |
 | `StructName`| `Point { x: 1.0, y: 2.0 }` | user-defined structs                |
 | `EnumName`  | `Shape::Circle(1.0)`   | user-defined enums                      |
+| `(A, B)`    | `(1, "one")`           | tuples                                  |
+| `Option<T>` | `Some(5)`, `None`      | a value that may be missing             |
+| `Result<T, E>` | `Ok(5)`, `Err("bad")` | success or an error                   |
+| `fn(A) -> B` | `\|x\| x + 1`, `square` | closures and functions as values     |
 | `()`        |                        | "nothing", returned by functions with no return type |
 
 `i64`, `f64` and `String` work as aliases for `int`, `float` and `str`.
@@ -146,14 +150,25 @@ const NAME: str = "Tyfe";
 let mut nums = [5, 3, 8];
 nums.push(1);              // [5, 3, 8, 1]
 nums[0] = 50;
-let last = nums.pop();     // 1
+let last = nums.pop();     // Some(1)  (None if empty)
 println(nums.len());       // 3
 println(nums.contains(8)); // true
 let grid = [[1, 2], [3, 4]];
 println(grid[1][0]);       // 3
 ```
 
-Array methods: `len`, `is_empty`, `push`, `pop`, `insert(i, x)`, `remove(i)`, `clear`, `contains`, `reverse`, `join(sep)`. `a + b` joins two arrays.
+Array methods:
+- **basics:** `len`, `is_empty`, `push`, `pop`, `insert(i, x)`, `remove(i)`, `clear`, `contains`, `reverse`, `join(sep)`
+- **safe access** (returns `Option`): `get(i)`, `first`, `last`, `min`, `max`
+- **sorting:** `sort()` (in place), `sorted()`, `sort_by_key(f)`, `min_by_key(f)`, `max_by_key(f)`
+- **with a function:** `map`, `filter`, `fold(init, f)`, `for_each`, `any`, `all`, `count`, `find`, `position`
+- **others:** `sum`, `enumerate`, `zip(other)`
+
+`a + b` joins two arrays. `iter()` and `collect()` are accepted (and do nothing), so Rust-style chains work:
+
+```rust
+let evens_squared = nums.iter().filter(|n| n % 2 == 0).map(|n| n * n).collect();
+```
 
 ### Strings
 
@@ -161,6 +176,19 @@ Array methods: `len`, `is_empty`, `push`, `pop`, `insert(i, x)`, `remove(i)`, `c
 let s = "hello" + " world";
 s.len()  s.to_upper()  s.to_lower()  s.trim()  s.contains("lo")
 s.split(" ")  s.chars()  s.reverse()  s[0]
+"42".parse_int()     // Ok(42)   -- returns a Result
+"x".parse_float()    // Err("invalid float: \"x\"")
+```
+
+### Tuples
+
+```rust
+let point = (3, 4);
+println(point.0);                       // 3
+let (x, y) = point;                     // destructuring
+for (i, name) in names.enumerate() { }  // works in `for` too
+
+fn min_max(xs: [int]) -> (int, int) { ... }
 ```
 
 ### Structs
@@ -229,11 +257,76 @@ fn area(s: Shape) -> float {
 | `1..=9`, `0..10` | an int in the range |
 | `1 \| 2 \| 3` | any of the alternatives |
 | `Shape::Rect(w, h)` | that variant; binds its data to `w`, `h` |
+| `Some(x)`, `None`, `Ok(v)`, `Err(e)` | Option / Result variants |
+| `(a, 0)` | a tuple, element by element |
 | `x` | anything; binds it to `x` |
 | `_` | anything |
 | `x if x > 0` | a pattern plus a guard condition |
 
 If no arm matches, the program stops with an error.
+
+### `Option`, `Result` and `?`
+
+Like Rust, there is no `null`. A value that may be missing is an `Option`, and an operation that can fail returns a `Result`:
+
+```rust
+fn find(xs: [int], target: int) -> Option<int> {
+    for (i, x) in xs.enumerate() {
+        if x == target { return Some(i); }
+    }
+    None
+}
+
+fn divide(a: int, b: int) -> Result<int, str> {
+    if b == 0 { return Err("division by zero"); }
+    Ok(a / b)
+}
+```
+
+The `?` operator unwraps a `Some`/`Ok`, or returns the `None`/`Err` from the current function straight away:
+
+```rust
+fn parse_and_divide(a: str, b: str) -> Result<int, str> {
+    let x = a.parse_int()?;
+    let y = b.parse_int()?;
+    divide(x, y)
+}
+```
+
+`main` can return a `Result` too; an `Err` stops the program with an error message.
+
+Methods: `is_some`, `is_none`, `is_ok`, `is_err`, `unwrap`, `expect(msg)`, `unwrap_or(default)`, `unwrap_or_else(f)`, `map(f)`, `and_then(f)`, `ok()`, `err()`.
+
+### `if let` and `while let`
+
+```rust
+if let Some(i) = find(xs, 7) {
+    println("found at {}", i);
+} else {
+    println("not found");
+}
+
+while let Some(top) = stack.pop() {
+    println(top);
+}
+```
+
+### Closures
+
+```rust
+let double = |x| x * 2;
+let add = |a: int, b: int| -> int { a + b };   // types and a return type are optional
+
+fn apply_twice(f: fn(int) -> int, x: int) -> int { f(f(x)) }
+apply_twice(double, 5);   // 20
+apply_twice(square, 3);   // named functions work as values too
+
+fn make_adder(n: int) -> fn(int) -> int {
+    |x| x + n
+}
+```
+
+Closures capture a **copy** of the variables they use, at the moment they're created. Changing a captured variable inside a closure doesn't affect the original.
 
 ### Printing and formatting
 
@@ -295,9 +388,8 @@ tests/            integration tests
 
 ## Roadmap ideas
 
-- `Option` / `Result` built in, and the `?` operator
-- closures and higher-order functions (`map`, `filter`)
-- traits
+- traits and generics
+- `HashMap` / dictionaries
 - references (`&`, `&mut`) instead of copy-only arguments
 - a static type checker that runs before the program does
 - a bytecode VM or native compilation for speed

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
@@ -14,7 +15,14 @@ pub enum Type {
     Str,
     Unit,
     Array(Box<Type>),
+    Tuple(Vec<Type>),
+    Option(Box<Type>),
+    Result(Box<Type>, Box<Type>),
+    /// `fn(int, str) -> bool`
+    Fn(Vec<Type>, Box<Type>),
     Named(String),
+    /// Internal: the payload type of the built-in `Option` / `Result` enums.
+    Any,
 }
 
 impl fmt::Display for Type {
@@ -26,7 +34,18 @@ impl fmt::Display for Type {
             Type::Str => write!(f, "str"),
             Type::Unit => write!(f, "()"),
             Type::Array(t) => write!(f, "[{}]", t),
+            Type::Tuple(ts) => {
+                let parts: Vec<String> = ts.iter().map(|t| t.to_string()).collect();
+                write!(f, "({})", parts.join(", "))
+            }
+            Type::Option(t) => write!(f, "Option<{}>", t),
+            Type::Result(t, e) => write!(f, "Result<{}, {}>", t, e),
+            Type::Fn(params, ret) => {
+                let parts: Vec<String> = params.iter().map(|t| t.to_string()).collect();
+                write!(f, "fn({}) -> {}", parts.join(", "), ret)
+            }
             Type::Named(n) => write!(f, "{}", n),
+            Type::Any => write!(f, "_"),
         }
     }
 }
@@ -115,6 +134,29 @@ pub enum ExprKind {
     Return(Option<Box<Expr>>),
     Break(Option<Box<Expr>>),
     Continue,
+    /// `()`
+    Unit,
+    /// `(a, b, ...)`
+    Tuple(Vec<Expr>),
+    /// `tuple.0`
+    TupleField(Box<Expr>, usize),
+    /// `|x, y| body`
+    Closure(Rc<ClosureDef>),
+    /// Calling the result of an expression, e.g. `make_adder(1)(2)` or a closure in a variable.
+    CallExpr(Box<Expr>, Vec<Expr>),
+    /// `expr?`
+    Try(Box<Expr>),
+    /// `if let PATTERN = value { } else ...`
+    IfLet(Box<Pattern>, Box<Expr>, Block, Option<Box<Expr>>),
+}
+
+#[derive(Debug)]
+pub struct ClosureDef {
+    pub params: Vec<(String, Option<Type>)>,
+    pub ret: Option<Type>,
+    pub body: Expr,
+    /// Variable names used in the body; those in scope are copied into the closure.
+    pub captures: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +177,7 @@ pub enum Pattern {
     Range(i64, i64, bool),
     /// `Enum::Variant` or `Enum::Variant(p1, p2, ...)`
     Variant { enum_name: String, variant: String, fields: Option<Vec<Pattern>>, span: Span },
+    Tuple(Vec<Pattern>),
     Or(Vec<Pattern>),
 }
 
@@ -154,13 +197,14 @@ pub enum ForIter {
 
 #[derive(Debug, Clone)]
 pub enum StmtKind {
-    Let { name: String, mutable: bool, ty: Option<Type>, value: Expr },
+    Let { pattern: Pattern, mutable: bool, ty: Option<Type>, value: Expr },
     Assign { target: Expr, op: Option<BinOp>, value: Expr },
     Expr(Expr),
     /// REPL only: a trailing expression whose value is printed.
     Echo(Expr),
     While { cond: Expr, body: Block },
-    For { var: String, iter: ForIter, body: Block },
+    WhileLet { pattern: Pattern, value: Expr, body: Block },
+    For { pattern: Pattern, iter: ForIter, body: Block },
 }
 
 #[derive(Debug, Clone)]

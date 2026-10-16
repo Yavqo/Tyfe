@@ -1,0 +1,45 @@
+// Tuples: grouping values without declaring a struct.
+
+fn min_max(xs: [int]) -> (int, int) {
+    let mut lo = xs[0];
+    let mut hi = xs[0];
+    for x in xs {
+        if x < lo { lo = x; }
+        if x > hi { hi = x; }
+    }
+    (lo, hi)
+}
+
+fn main() {
+    let point = (3, 4);
+    println("x = {}, y = {}", point.0, point.1);
+
+    // Destructuring
+    let (lo, hi) = min_max([7, 2, 9, 4]);
+    println("range is {}..{}", lo, hi);
+
+    let person: (str, int, bool) = ("Ada", 36, true);
+    let (name, age, _) = person;
+    println("{} is {}", name, age);
+
+    // enumerate() and zip() produce tuples
+    let fruits = ["apple", "pear", "plum"];
+    for (i, f) in fruits.enumerate() {
+        println("{}: {}", i, f);
+    }
+    let prices = [1.25, 0.5, 2.0];
+    for (f, p) in fruits.zip(prices) {
+        println("{} costs {}", f, p);
+    }
+
+    // Matching on tuples
+    for pair in [(0, 0), (0, 5), (2, 0), (1, 1)] {
+        let where_ = match pair {
+            (0, 0) => "origin",
+            (0, _) => "on the y axis",
+            (_, 0) => "on the x axis",
+            _ => "somewhere else",
+        };
+        println("{:?} is {}", pair, where_);
+    }
+}

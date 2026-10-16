@@ -1,0 +1,47 @@
+// Closures and functions as values.
+
+fn apply_twice(f: fn(int) -> int, x: int) -> int {
+    f(f(x))
+}
+
+fn make_adder(n: int) -> fn(int) -> int {
+    // The closure keeps a copy of `n`.
+    |x| x + n
+}
+
+fn square(x: int) -> int {
+    x * x
+}
+
+fn main() {
+    let double = |x| x * 2;
+    println("double(21) = {}", double(21));
+    println("apply_twice(double, 5) = {}", apply_twice(double, 5));
+    println("apply_twice(square, 3) = {}", apply_twice(square, 3));
+
+    let add10 = make_adder(10);
+    println("add10(5) = {}", add10(5));
+    println("make_adder(1)(1) = {}", make_adder(1)(1));
+
+    let nums = [3, 8, 1, 9, 4, 7];
+
+    // Rust-style iterator chains (`iter()` and `collect()` are optional).
+    let evens_squared = nums.iter().filter(|n| n % 2 == 0).map(|n| n * n).collect();
+    println("evens squared: {}", evens_squared);
+
+    println("sum = {}, total via fold = {}", nums.sum(), nums.fold(0, |acc, n| acc + n));
+    println("any > 8? {}  all > 0? {}", nums.any(|n| n > 8), nums.all(|n| n > 0));
+    println("first > 5: {:?}", nums.find(|n| n > 5));
+    println("sorted: {}  max: {:?}", nums.sorted(), nums.max());
+
+    let words = ["banana", "kiwi", "apple", "fig"];
+    println("by length: {:?}", words.sort_by_key(|w| w.len()));
+    println("shortest: {:?}", words.min_by_key(|w| w.len()));
+
+    // Closures can take typed parameters and a block body.
+    let describe = |name: str, age: int| -> str {
+        let kind = if age >= 18 { "adult" } else { "minor" };
+        format("{} ({})", name, kind)
+    };
+    println("{}", describe("Sam", 20));
+}

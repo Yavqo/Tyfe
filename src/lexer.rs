@@ -41,6 +41,7 @@ pub enum Tok {
     FatArrow,
     Pipe,
     Amp,
+    Question,
     Dot,
     DotDot,
     DotDotEq,
@@ -105,6 +106,7 @@ impl Tok {
             Tok::FatArrow => "=>",
             Tok::Pipe => "|",
             Tok::Amp => "&",
+            Tok::Question => "?",
             Tok::LParen => "(",
             Tok::RParen => ")",
             Tok::LBrace => "{",
@@ -224,7 +226,8 @@ impl Lexer {
         }
     }
 
-    fn number(&mut self, span: Span) -> Result<Tok> {
+    /// `allow_float` is false right after a `.`, so `t.0.1` lexes as two field accesses.
+    fn number(&mut self, span: Span, allow_float: bool) -> Result<Tok> {
         let mut text = String::new();
         let mut is_float = false;
         while let Some(c) = self.peek() {
@@ -233,7 +236,7 @@ impl Lexer {
                 self.bump();
             } else if c == '_' {
                 self.bump();
-            } else if c == '.' && !is_float && self.peek2().is_some_and(|d| d.is_ascii_digit()) {
+            } else if c == '.' && allow_float && !is_float && self.peek2().is_some_and(|d| d.is_ascii_digit()) {
                 is_float = true;
                 text.push(c);
                 self.bump();
@@ -295,7 +298,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>> {
         };
 
         let tok = if c.is_ascii_digit() {
-            lx.number(span)?
+            let after_dot = matches!(toks.last(), Some(Token { tok: Tok::Dot, .. }));
+            lx.number(span, !after_dot)?
         } else if c == '"' {
             lx.string(span)?
         } else if c.is_alphabetic() || c == '_' {
@@ -373,6 +377,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>> {
                 ('|', Some('|')) => two(Tok::OrOr, &mut lx),
                 ('|', _) => Tok::Pipe,
                 ('&', _) => Tok::Amp,
+                ('?', _) => Tok::Question,
                 ('+', _) => Tok::Plus,
                 ('-', _) => Tok::Minus,
                 ('*', _) => Tok::Star,
