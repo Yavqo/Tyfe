@@ -1,0 +1,47 @@
+// if / else if / else, while, for, break and continue.
+
+fn classify(n: int) -> str {
+    if n < 0 {
+        return "negative";
+    } else if n == 0 {
+        return "zero";
+    } else {
+        return "positive";
+    }
+}
+
+fn main() {
+    println("{} {} {}", classify(-3), classify(0), classify(8));
+
+    // while loop
+    let mut n = 3;
+    while n > 0 {
+        println("countdown: {}", n);
+        n -= 1;
+    }
+
+    // for over a range (end exclusive) and ..= (end inclusive)
+    let mut sum = 0;
+    for i in 1..=100 {
+        sum += i;
+    }
+    println("sum of 1..=100 = {}", sum);
+
+    // FizzBuzz with continue / break
+    for i in 1..100 {
+        if i > 15 {
+            break;
+        }
+        if i % 15 == 0 {
+            println("FizzBuzz");
+            continue;
+        }
+        if i % 3 == 0 {
+            println("Fizz");
+        } else if i % 5 == 0 {
+            println("Buzz");
+        } else {
+            println(i);
+        }
+    }
+}

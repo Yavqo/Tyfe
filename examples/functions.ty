@@ -1,0 +1,56 @@
+// Functions with typed parameters, return types and recursion.
+
+fn add(a: int, b: int) -> int {
+    return a + b;
+}
+
+fn factorial(n: int) -> int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn fib(n: int) -> int {
+    let mut a = 0;
+    let mut b = 1;
+    for _ in 0..n {
+        let next = a + b;
+        a = b;
+        b = next;
+    }
+    return a;
+}
+
+fn is_prime(n: int) -> bool {
+    if n < 2 {
+        return false;
+    }
+    let mut d = 2;
+    while d * d <= n {
+        if n % d == 0 {
+            return false;
+        }
+        d += 1;
+    }
+    return true;
+}
+
+fn greet(name: str) {
+    println("Hi, {}!", name);
+}
+
+fn main() {
+    println("add(2, 3) = {}", add(2, 3));
+    println("10! = {}", factorial(10));
+    println("fib(50) = {}", fib(50));
+
+    let mut primes = [];
+    for n in 1..30 {
+        if is_prime(n) {
+            primes.push(n);
+        }
+    }
+    println("primes < 30: {}", primes);
+    greet("Tyfe");
+}

@@ -1,0 +1,10 @@
+nums = [5, 3, 8, 1, 9, 2], len = 6
+first = 5, last = 2
+after push/assign/pop: [50, 3, 8, 1, 9, 2] (popped 7)
+sum = 73
+sorted = [1, 2, 3, 8, 9, 50]
+original is unchanged: [50, 3, 8, 1, 9, 2]
+contains 8? true
+["the", "quick", "brown", "fox"]
+fox-brown-quick-the
+grid[1][0] = 3

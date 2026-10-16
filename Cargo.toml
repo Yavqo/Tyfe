@@ -1,0 +1,11 @@
+[package]
+name = "tyfe"
+version = "0.1.0"
+edition = "2021"
+description = "Tyfe: a small, Rust-flavored programming language"
+
+[[bin]]
+name = "tyfe"
+path = "src/main.rs"
+
+[dependencies]

@@ -1,0 +1,46 @@
+// Arrays: literals, indexing, iteration and methods.
+
+fn sum(xs: [int]) -> int {
+    let mut total = 0;
+    for x in xs {
+        total += x;
+    }
+    return total;
+}
+
+fn bubble_sort(mut xs: [int]) -> [int] {
+    let n = xs.len();
+    for i in 0..n {
+        for j in 0..n - 1 - i {
+            if xs[j] > xs[j + 1] {
+                let tmp = xs[j];
+                xs[j] = xs[j + 1];
+                xs[j + 1] = tmp;
+            }
+        }
+    }
+    return xs;
+}
+
+fn main() {
+    let mut nums = [5, 3, 8, 1, 9, 2];
+    println("nums = {}, len = {}", nums, len(nums));
+    println("first = {}, last = {}", nums[0], nums[nums.len() - 1]);
+
+    nums.push(7);
+    nums[0] = 50;
+    let popped = nums.pop();
+    println("after push/assign/pop: {} (popped {})", nums, popped);
+
+    println("sum = {}", sum(nums));
+    println("sorted = {}", bubble_sort(nums));
+    println("original is unchanged: {}", nums);
+    println("contains 8? {}", nums.contains(8));
+
+    let words = "the quick brown fox".split(" ");
+    println("{:?}", words);
+    println("{}", words.reverse().join("-"));
+
+    let grid = [[1, 2], [3, 4]];
+    println("grid[1][0] = {}", grid[1][0]);
+}

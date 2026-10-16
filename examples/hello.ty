@@ -1,0 +1,4 @@
+// The classic.
+fn main() {
+    println("Hello, Tyfe!");
+}

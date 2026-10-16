@@ -1,0 +1,29 @@
+// Variables, types, arithmetic and strings.
+
+fn main() {
+    // Immutable by default, like Rust.
+    let name = "Tyfe";
+    let year: int = 2026;
+    let pi: float = 3.14159;
+    let ready: bool = true;
+
+    // `mut` lets a variable change.
+    let mut count = 0;
+    count += 5;
+    count = count * 2;
+
+    println("{} in {}", name, year);
+    println("count = {}", count);
+    println("pi * 2 = {}", pi * 2.0);
+    println("ready? {}", ready);
+
+    // Integer math stays integer; mixing int and float needs a conversion.
+    println("7 / 2 = {}, 7 % 2 = {}", 7 / 2, 7 % 2);
+    println("7 / 2.0 = {}", float(7) / 2.0);
+
+    // Strings
+    let greeting = "hello" + ", " + "world";
+    println("{} has {} characters", greeting, greeting.len());
+    println("upper: {}", greeting.to_upper());
+    println("debug view: {:?}", greeting);
+}

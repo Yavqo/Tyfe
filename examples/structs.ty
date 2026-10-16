@@ -1,0 +1,39 @@
+// Structs: declaration, construction, field access and update.
+
+struct Point {
+    x: float,
+    y: float,
+}
+
+struct Player {
+    name: str,
+    pos: Point,
+    hp: int,
+}
+
+fn distance(a: Point, b: Point) -> float {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    return (dx * dx + dy * dy).sqrt();
+}
+
+fn heal(mut p: Player, amount: int) -> Player {
+    p.hp = min(p.hp + amount, 100);
+    return p;
+}
+
+fn main() {
+    let origin = Point { x: 0.0, y: 0.0 };
+    let mut hero = Player {
+        name: "Ferris",
+        pos: Point { x: 3.0, y: 4.0 },
+        hp: 70,
+    };
+
+    println("{:?}", hero);
+    println("distance from origin: {}", distance(origin, hero.pos));
+
+    hero.pos.x += 1.5;
+    hero = heal(hero, 50);
+    println("{} is at ({}, {}) with {} hp", hero.name, hero.pos.x, hero.pos.y, hero.hp);
+}
