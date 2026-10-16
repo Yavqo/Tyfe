@@ -1,0 +1,5 @@
+clicks = 7
+after reset: Counter { name: "clicks", count: 0 }
+area 6.0 -> 24.0
+big > square(3)? true
+10

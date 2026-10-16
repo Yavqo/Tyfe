@@ -1,6 +1,6 @@
 # Tyfe
 
-Tyfe is a small programming language with Rust-like syntax. It has `fn`, `let` / `let mut`, type annotations, structs and arrays. The goal is to feel like Rust and C++ while staying easy to learn.
+Tyfe is a small programming language with Rust-like syntax. It has `fn`, `let` / `let mut`, type annotations, structs with `impl` methods, enums with `match`, and arrays. The goal is to feel like Rust and C++ while staying easy to learn.
 
 ```rust
 struct Point {
@@ -56,6 +56,7 @@ count += 1;               // also -=, *=, /=, %=
 | `str`       | `"hi\n"`               | escapes: `\n \t \r \\ \" \0`            |
 | `[T]`       | `[1, 2, 3]`            | arrays; all elements share one type     |
 | `StructName`| `Point { x: 1.0, y: 2.0 }` | user-defined structs                |
+| `EnumName`  | `Shape::Circle(1.0)`   | user-defined enums                      |
 | `()`        |                        | "nothing", returned by functions with no return type |
 
 `i64`, `f64` and `String` work as aliases for `int`, `float` and `str`.
@@ -69,10 +70,11 @@ Like Rust, Tyfe is strict about types:
 ### Functions
 
 Parameters need types. A return type is optional; leave it out for `()`.
+Like Rust, the last expression without a `;` is the return value.
 
 ```rust
 fn add(a: int, b: int) -> int {
-    return a + b;
+    a + b               // same as `return a + b;`
 }
 
 fn greet(name: str) {
@@ -112,6 +114,32 @@ for c in "abc" { }       // each character
 // `break` and `continue` work in every loop
 ```
 
+### Everything is an expression
+
+`if`, `match`, `loop` and `{ blocks }` produce values:
+
+```rust
+let bigger = if a > b { a } else { b };
+
+let label = {
+    let n = count * 2;
+    format("{} items", n)
+};
+
+// `loop` repeats until `break`, which can carry a value out
+let first_even = loop {
+    if xs[i] % 2 == 0 { break xs[i]; }
+    i += 1;
+};
+```
+
+### Constants
+
+```rust
+const MAX_HP: int = 100;
+const NAME: str = "Tyfe";
+```
+
 ### Arrays
 
 ```rust
@@ -144,6 +172,68 @@ let mut p = Player { name: "Ferris", hp: 70 };
 p.hp += 10;
 println("{:?}", p);   // Player { name: "Ferris", hp: 80 }
 ```
+
+### Methods with `impl`
+
+```rust
+struct Counter { count: int }
+
+impl Counter {
+    fn new() -> Self {               // associated function: Counter::new()
+        Self { count: 0 }
+    }
+    fn get(&self) -> int {           // &self: read-only access
+        self.count
+    }
+    fn add(&mut self, n: int) {      // &mut self: may modify
+        self.count += n;
+    }
+    fn doubled(mut self) -> Self {   // self: takes a copy
+        self.count *= 2;
+        self
+    }
+}
+
+let mut c = Counter::new();
+c.add(5);
+println(c.get());                    // 5
+```
+
+Calling a `&mut self` method needs a `let mut` variable, just like Rust.
+
+### Enums and `match`
+
+Enum variants can carry data:
+
+```rust
+enum Shape {
+    Circle(float),
+    Rect(float, float),
+    Empty,
+}
+
+fn area(s: Shape) -> float {
+    match s {
+        Shape::Circle(r) => 3.14159 * r * r,
+        Shape::Rect(w, h) => w * h,
+        Shape::Empty => 0.0,
+    }
+}
+```
+
+`match` patterns:
+
+| Pattern | Matches |
+|---|---|
+| `5`, `"hi"`, `true` | that exact value |
+| `1..=9`, `0..10` | an int in the range |
+| `1 \| 2 \| 3` | any of the alternatives |
+| `Shape::Rect(w, h)` | that variant; binds its data to `w`, `h` |
+| `x` | anything; binds it to `x` |
+| `_` | anything |
+| `x if x > 0` | a pattern plus a guard condition |
+
+If no arm matches, the program stops with an error.
 
 ### Printing and formatting
 
@@ -205,8 +295,9 @@ tests/            integration tests
 
 ## Roadmap ideas
 
-- `impl` blocks and methods on structs
-- `enum` and `match`
+- `Option` / `Result` built in, and the `?` operator
+- closures and higher-order functions (`map`, `filter`)
+- traits
 - references (`&`, `&mut`) instead of copy-only arguments
 - a static type checker that runs before the program does
 - a bytecode VM or native compilation for speed

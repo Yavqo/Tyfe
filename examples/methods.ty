@@ -1,0 +1,69 @@
+// impl blocks: associated functions, &self and &mut self methods.
+
+struct Counter {
+    name: str,
+    count: int,
+}
+
+impl Counter {
+    // Associated function (no `self`) — called as Counter::new(...)
+    fn new(name: str) -> Self {
+        Self { name: name, count: 0 }
+    }
+
+    // `&self` can read but not modify.
+    fn get(&self) -> int {
+        self.count
+    }
+
+    // `&mut self` modifies the value it's called on.
+    fn add(&mut self, n: int) {
+        self.count += n;
+    }
+
+    fn reset(&mut self) {
+        self.count = 0;
+    }
+}
+
+struct Rect {
+    w: float,
+    h: float,
+}
+
+impl Rect {
+    fn square(size: float) -> Rect {
+        Rect { w: size, h: size }
+    }
+
+    fn area(&self) -> float {
+        self.w * self.h
+    }
+
+    fn scaled(&self, k: float) -> Rect {
+        Rect { w: self.w * k, h: self.h * k }
+    }
+
+    fn is_bigger_than(&self, other: Rect) -> bool {
+        self.area() > other.area()
+    }
+}
+
+fn main() {
+    let mut clicks = Counter::new("clicks");
+    clicks.add(3);
+    clicks.add(4);
+    println("{} = {}", clicks.name, clicks.get());
+    clicks.reset();
+    println("after reset: {:?}", clicks);
+
+    let r = Rect { w: 2.0, h: 3.0 };
+    let big = r.scaled(2.0);
+    println("area {} -> {}", r.area(), big.area());
+    println("big > square(3)? {}", big.is_bigger_than(Rect::square(3.0)));
+
+    // Methods work on struct fields and array elements too.
+    let mut counters = [Counter::new("a"), Counter::new("b")];
+    counters[1].add(10);
+    println("{}", counters[1].get());
+}

@@ -1,0 +1,51 @@
+// In Tyfe (like Rust) `if`, `match`, `loop` and blocks are expressions,
+// and a function returns its last expression when it has no `;`.
+
+const LIMIT: int = 100;
+const GREETING: str = "hello";
+
+fn max3(a: int, b: int, c: int) -> int {
+    let ab = if a > b { a } else { b };
+    if ab > c { ab } else { c }
+}
+
+fn collatz_steps(start: int) -> int {
+    let mut n = start;
+    let mut steps = 0;
+    // `loop` runs forever until `break`, which can carry a value out.
+    loop {
+        if n == 1 {
+            break steps;
+        }
+        n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
+        steps += 1;
+    }
+}
+
+fn first_over(xs: [int], limit: int) -> int {
+    for x in xs {
+        if x > limit {
+            return x;
+        }
+    }
+    -1
+}
+
+fn main() {
+    println("max3 = {}", max3(4, 9, 2));
+    println("collatz(27) takes {} steps", collatz_steps(27));
+    println("first over {} = {}", LIMIT, first_over([5, 120, 300], LIMIT));
+
+    let label = {
+        let shout = GREETING.to_upper();
+        shout + "!"
+    };
+    println("{}", label);
+
+    let grade = match 87 {
+        90..=100 => "A",
+        80..=89 => "B",
+        _ => "C or below",
+    };
+    println("grade: {}", grade);
+}

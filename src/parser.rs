@@ -21,13 +21,22 @@ pub fn parse_repl(src: &str) -> Result<Vec<ReplEntry>> {
     let mut p = Parser::new(lex(src)?, true);
     let mut entries = Vec::new();
     while !p.at(&Tok::Eof) {
-        if p.at(&Tok::Fn) || p.at(&Tok::Struct) {
+        if p.starts_item() {
             entries.push(ReplEntry::Item(p.item()?));
         } else {
-            entries.push(ReplEntry::Stmt(p.stmt()?));
+            match p.stmt_or_tail(true)? {
+                Parsed::Stmt(s) => entries.push(ReplEntry::Stmt(s)),
+                Parsed::Tail(e) => return Err(Error::syntax(e.span, "unexpected `}`")),
+            }
         }
     }
     Ok(entries)
+}
+
+enum Parsed {
+    Stmt(Stmt),
+    /// The final expression of a block, with no `;` — the block's value.
+    Tail(Expr),
 }
 
 struct Parser {
@@ -37,11 +46,13 @@ struct Parser {
     /// (so `if x == y { ... }` works, like in Rust).
     no_struct: bool,
     repl: bool,
+    /// The type `Self` refers to while parsing an `impl` block.
+    impl_type: Option<String>,
 }
 
 impl Parser {
     fn new(toks: Vec<Token>, repl: bool) -> Self {
-        Parser { toks, pos: 0, no_struct: false, repl }
+        Parser { toks, pos: 0, no_struct: false, repl, impl_type: None }
     }
 
     // ---------- token helpers ----------
@@ -61,6 +72,10 @@ impl Parser {
 
     fn at(&self, t: &Tok) -> bool {
         self.peek() == t
+    }
+
+    fn at_ident(&self, name: &str) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == name)
     }
 
     fn advance(&mut self) -> Token {
@@ -102,6 +117,16 @@ impl Parser {
         }
     }
 
+    /// Resolve `Self` to the type of the enclosing `impl` block.
+    fn resolve_self(&self, name: String, span: Span) -> Result<String> {
+        if name != "Self" {
+            return Ok(name);
+        }
+        self.impl_type
+            .clone()
+            .ok_or_else(|| Error::syntax(span, "`Self` can only be used inside an `impl` block"))
+    }
+
     /// Parse with struct literals temporarily allowed/disallowed.
     fn with_struct<T>(&mut self, allowed: bool, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         let saved = self.no_struct;
@@ -111,28 +136,81 @@ impl Parser {
         r
     }
 
+    /// Comma-separated list up to (and consuming) `close`.
+    fn list<T>(&mut self, close: Tok, what: &str, mut f: impl FnMut(&mut Self) -> Result<T>) -> Result<Vec<T>> {
+        let mut out = Vec::new();
+        while !self.at(&close) {
+            out.push(f(self)?);
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(close, what)?;
+        Ok(out)
+    }
+
     // ---------- items ----------
+
+    fn starts_item(&self) -> bool {
+        matches!(self.peek(), Tok::Fn | Tok::Struct | Tok::Enum | Tok::Impl | Tok::Const)
+    }
 
     fn item(&mut self) -> Result<Item> {
         match self.peek() {
-            Tok::Fn => Ok(Item::Fn(self.fn_decl()?)),
+            Tok::Fn => Ok(Item::Fn(self.fn_decl(false)?)),
             Tok::Struct => Ok(Item::Struct(self.struct_decl()?)),
+            Tok::Enum => Ok(Item::Enum(self.enum_decl()?)),
+            Tok::Impl => Ok(Item::Impl(self.impl_decl()?)),
+            Tok::Const => Ok(Item::Const(self.const_decl()?)),
             other => Err(Error::syntax(
                 self.span(),
-                format!("expected `fn` or `struct` at top level, found {}", other.describe()),
+                format!("expected `fn`, `struct`, `enum`, `impl` or `const` at top level, found {}", other.describe()),
             )),
         }
     }
 
-    fn fn_decl(&mut self) -> Result<FnDecl> {
+    fn fn_decl(&mut self, in_impl: bool) -> Result<FnDecl> {
         let span = self.expect(Tok::Fn, "")?.span;
         let (name, _) = self.ident("function name")?;
         self.expect(Tok::LParen, "after function name")?;
-        let mut params = Vec::new();
+
+        // Optional `self`, `mut self`, `&self` or `&mut self` receiver.
+        let self_span = self.span();
+        let self_kind = if self.at(&Tok::Amp) {
+            self.advance();
+            let mutable = self.eat(&Tok::Mut);
+            if !self.at_ident("self") {
+                return Err(Error::syntax(self.span(), "expected `self` after `&`"));
+            }
+            self.advance();
+            Some(if mutable { SelfKind::RefMut } else { SelfKind::Ref })
+        } else if self.at(&Tok::Mut) && matches!(self.peek_at(1), Tok::Ident(n) if n == "self") {
+            self.advance();
+            self.advance();
+            Some(SelfKind::Value { mutable: true })
+        } else if self.at_ident("self") {
+            self.advance();
+            Some(SelfKind::Value { mutable: false })
+        } else {
+            None
+        };
+        if self_kind.is_some() {
+            if !in_impl {
+                return Err(Error::syntax(self_span, "`self` parameters are only allowed in `impl` blocks"));
+            }
+            if !self.at(&Tok::RParen) {
+                self.expect(Tok::Comma, "after `self`")?;
+            }
+        }
+
+        let mut params: Vec<Param> = Vec::new();
         while !self.at(&Tok::RParen) {
             let mutable = self.eat(&Tok::Mut);
             let (pname, pspan) = self.ident("parameter name")?;
-            if params.iter().any(|p: &Param| p.name == pname) {
+            if pname == "self" {
+                return Err(Error::syntax(pspan, "`self` must be the first parameter"));
+            }
+            if params.iter().any(|p| p.name == pname) {
                 return Err(Error::syntax(pspan, format!("parameter `{}` is declared more than once", pname)));
             }
             self.expect(Tok::Colon, "after parameter name (parameters need a type, e.g. `x: int`)")?;
@@ -145,7 +223,7 @@ impl Parser {
         self.expect(Tok::RParen, "to close parameter list")?;
         let ret = if self.eat(&Tok::Arrow) { self.ty()? } else { Type::Unit };
         let body = self.block()?;
-        Ok(FnDecl { name, params, ret, body, span })
+        Ok(FnDecl { name, self_kind, params, ret, body, span })
     }
 
     fn struct_decl(&mut self) -> Result<StructDecl> {
@@ -168,6 +246,68 @@ impl Parser {
         Ok(StructDecl { name, fields, span })
     }
 
+    fn enum_decl(&mut self) -> Result<EnumDecl> {
+        let span = self.expect(Tok::Enum, "")?.span;
+        let (name, _) = self.ident("enum name")?;
+        self.expect(Tok::LBrace, "after enum name")?;
+        let mut variants: Vec<(String, Vec<Type>)> = Vec::new();
+        while !self.at(&Tok::RBrace) {
+            let (vname, vspan) = self.ident("variant name")?;
+            if variants.iter().any(|(n, _)| *n == vname) {
+                return Err(Error::syntax(vspan, format!("variant `{}` is declared more than once", vname)));
+            }
+            let types = if self.eat(&Tok::LParen) {
+                self.list(Tok::RParen, "to close variant fields", |p| p.ty())?
+            } else {
+                Vec::new()
+            };
+            variants.push((vname, types));
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(Tok::RBrace, "to close enum")?;
+        Ok(EnumDecl { name, variants, span })
+    }
+
+    fn impl_decl(&mut self) -> Result<ImplDecl> {
+        let span = self.expect(Tok::Impl, "")?.span;
+        let (type_name, _) = self.ident("type name after `impl`")?;
+        self.expect(Tok::LBrace, "after impl type")?;
+        let saved = self.impl_type.replace(type_name.clone());
+        let mut methods: Vec<FnDecl> = Vec::new();
+        let result = (|| {
+            while !self.at(&Tok::RBrace) {
+                if !self.at(&Tok::Fn) {
+                    return Err(Error::syntax(
+                        self.span(),
+                        format!("expected `fn` inside `impl`, found {}", self.peek().describe()),
+                    ));
+                }
+                let f = self.fn_decl(true)?;
+                if methods.iter().any(|m| m.name == f.name) {
+                    return Err(Error::syntax(f.span, format!("method `{}` is defined more than once", f.name)));
+                }
+                methods.push(f);
+            }
+            Ok(())
+        })();
+        self.impl_type = saved;
+        result?;
+        self.expect(Tok::RBrace, "to close impl")?;
+        Ok(ImplDecl { type_name, methods, span })
+    }
+
+    fn const_decl(&mut self) -> Result<ConstDecl> {
+        let span = self.expect(Tok::Const, "")?.span;
+        let (name, _) = self.ident("constant name")?;
+        let ty = if self.eat(&Tok::Colon) { Some(self.ty()?) } else { None };
+        self.expect(Tok::Eq, "in `const`")?;
+        let value = self.expr()?;
+        self.expect(Tok::Semi, "after `const`")?;
+        Ok(ConstDecl { name, ty, value, span })
+    }
+
     fn ty(&mut self) -> Result<Type> {
         let span = self.span();
         if self.eat(&Tok::LBracket) {
@@ -179,37 +319,48 @@ impl Parser {
             self.expect(Tok::RParen, "in unit type `()`")?;
             return Ok(Type::Unit);
         }
-        let (name, _) = self.ident("a type").map_err(|_| {
-            Error::syntax(span, format!("expected a type, found {}", self.peek().describe()))
-        })?;
+        let name = match self.peek().clone() {
+            Tok::Ident(name) => {
+                self.advance();
+                name
+            }
+            other => return Err(Error::syntax(span, format!("expected a type, found {}", other.describe()))),
+        };
         Ok(match name.as_str() {
             "int" | "i64" => Type::Int,
             "float" | "f64" => Type::Float,
             "bool" => Type::Bool,
             "str" | "String" => Type::Str,
-            _ => Type::Named(name),
+            _ => Type::Named(self.resolve_self(name, span)?),
         })
     }
 
     // ---------- statements ----------
 
-    fn block(&mut self) -> Result<Vec<Stmt>> {
+    fn block(&mut self) -> Result<Block> {
         self.expect(Tok::LBrace, "to start a block")?;
-        let mut stmts = Vec::new();
-        self.with_struct(true, |p| {
+        let block = self.with_struct(true, |p| {
+            let mut stmts = Vec::new();
+            let mut tail = None;
             while !p.at(&Tok::RBrace) {
                 if p.at(&Tok::Eof) {
                     return Err(Error::syntax(p.span(), "unexpected end of file: missing `}`"));
                 }
-                stmts.push(p.stmt()?);
+                match p.stmt_or_tail(false)? {
+                    Parsed::Stmt(s) => stmts.push(s),
+                    Parsed::Tail(e) => {
+                        tail = Some(Box::new(e));
+                        break;
+                    }
+                }
             }
-            Ok(())
+            Ok(Block { stmts, tail })
         })?;
         self.expect(Tok::RBrace, "to close block")?;
-        Ok(stmts)
+        Ok(block)
     }
 
-    fn stmt(&mut self) -> Result<Stmt> {
+    fn stmt_or_tail(&mut self, top_level: bool) -> Result<Parsed> {
         let span = self.span();
         let kind = match self.peek() {
             Tok::Let => {
@@ -222,7 +373,6 @@ impl Parser {
                 self.expect(Tok::Semi, "after `let` statement")?;
                 StmtKind::Let { name, mutable, ty, value }
             }
-            Tok::If => return self.if_stmt(),
             Tok::While => {
                 self.advance();
                 let cond = self.with_struct(false, |p| p.expr())?;
@@ -246,25 +396,17 @@ impl Parser {
                 let body = self.block()?;
                 StmtKind::For { var, iter, body }
             }
-            Tok::Return => {
+            Tok::Semi => {
+                // A stray `;` is an empty statement.
                 self.advance();
-                let value = if self.at(&Tok::Semi) { None } else { Some(self.expr()?) };
-                self.expect(Tok::Semi, "after `return`")?;
-                StmtKind::Return(value)
+                let empty = Expr { kind: ExprKind::Block(Block { stmts: vec![], tail: None }), span };
+                StmtKind::Expr(empty)
             }
-            Tok::Break => {
-                self.advance();
-                self.expect(Tok::Semi, "after `break`")?;
-                StmtKind::Break
-            }
-            Tok::Continue => {
-                self.advance();
-                self.expect(Tok::Semi, "after `continue`")?;
-                StmtKind::Continue
-            }
-            Tok::LBrace => StmtKind::Block(self.block()?),
             _ => {
-                let e = self.expr()?;
+                // `if`, `match`, `loop` and `{}` don't need a `;` when used as statements.
+                let block_like = matches!(self.peek(), Tok::If | Tok::Match | Tok::Loop | Tok::LBrace);
+                let e = if block_like { self.block_expr()? } else { self.expr()? };
+
                 let op = match self.peek() {
                     Tok::Eq => Some(None),
                     Tok::PlusEq => Some(Some(BinOp::Add)),
@@ -274,7 +416,7 @@ impl Parser {
                     Tok::PercentEq => Some(Some(BinOp::Rem)),
                     _ => None,
                 };
-                if let Some(op) = op {
+                if let (Some(op), false) = (op, block_like) {
                     let op_span = self.span();
                     self.advance();
                     if !matches!(e.kind, ExprKind::Var(_) | ExprKind::Index(..) | ExprKind::Field(..)) {
@@ -283,31 +425,20 @@ impl Parser {
                     let value = self.expr()?;
                     self.expect(Tok::Semi, "after assignment")?;
                     StmtKind::Assign { target: e, op, value }
-                } else if self.repl && self.at(&Tok::Eof) {
+                } else if !top_level && self.at(&Tok::RBrace) {
+                    return Ok(Parsed::Tail(e));
+                } else if top_level && self.repl && self.at(&Tok::Eof) {
                     StmtKind::Echo(e)
+                } else if block_like {
+                    self.eat(&Tok::Semi);
+                    StmtKind::Expr(e)
                 } else {
                     self.expect(Tok::Semi, "after expression")?;
                     StmtKind::Expr(e)
                 }
             }
         };
-        Ok(Stmt { kind, span })
-    }
-
-    fn if_stmt(&mut self) -> Result<Stmt> {
-        let span = self.expect(Tok::If, "")?.span;
-        let cond = self.with_struct(false, |p| p.expr())?;
-        let then = self.block()?;
-        let else_ = if self.eat(&Tok::Else) {
-            if self.at(&Tok::If) {
-                Some(vec![self.if_stmt()?])
-            } else {
-                Some(self.block()?)
-            }
-        } else {
-            None
-        };
-        Ok(Stmt { kind: StmtKind::If { cond, then, else_ }, span })
+        Ok(Parsed::Stmt(Stmt { kind, span }))
     }
 
     // ---------- expressions (lowest to highest precedence) ----------
@@ -316,11 +447,7 @@ impl Parser {
         self.or()
     }
 
-    fn binary_level(
-        &mut self,
-        next: fn(&mut Self) -> Result<Expr>,
-        ops: &[(Tok, BinOp)],
-    ) -> Result<Expr> {
+    fn binary_level(&mut self, next: fn(&mut Self) -> Result<Expr>, ops: &[(Tok, BinOp)]) -> Result<Expr> {
         let mut left = next(self)?;
         'outer: loop {
             for (tok, op) in ops {
@@ -401,18 +528,7 @@ impl Parser {
 
     fn args(&mut self) -> Result<Vec<Expr>> {
         self.expect(Tok::LParen, "")?;
-        let args = self.with_struct(true, |p| {
-            let mut args = Vec::new();
-            while !p.at(&Tok::RParen) {
-                args.push(p.expr()?);
-                if !p.eat(&Tok::Comma) {
-                    break;
-                }
-            }
-            Ok(args)
-        })?;
-        self.expect(Tok::RParen, "to close argument list")?;
-        Ok(args)
+        self.with_struct(true, |p| p.list(Tok::RParen, "to close argument list", |p| p.expr()))
     }
 
     fn looks_like_struct_lit(&self) -> bool {
@@ -420,6 +536,154 @@ impl Parser {
             && self.peek_at(1) == &Tok::LBrace
             && (self.peek_at(2) == &Tok::RBrace
                 || (matches!(self.peek_at(2), Tok::Ident(_)) && self.peek_at(3) == &Tok::Colon))
+    }
+
+    /// Can the current token start an expression? (Used after `return` / `break`.)
+    fn starts_expr(&self) -> bool {
+        !matches!(
+            self.peek(),
+            Tok::Semi | Tok::RBrace | Tok::RParen | Tok::RBracket | Tok::Comma | Tok::Eof
+        )
+    }
+
+    /// `if`, `match`, `loop` or a `{ block }`.
+    fn block_expr(&mut self) -> Result<Expr> {
+        let span = self.span();
+        let kind = match self.peek() {
+            Tok::If => return self.if_expr(),
+            Tok::Match => return self.match_expr(),
+            Tok::Loop => {
+                self.advance();
+                ExprKind::Loop(self.block()?)
+            }
+            _ => ExprKind::Block(self.block()?),
+        };
+        Ok(Expr { kind, span })
+    }
+
+    fn if_expr(&mut self) -> Result<Expr> {
+        let span = self.expect(Tok::If, "")?.span;
+        let cond = self.with_struct(false, |p| p.expr())?;
+        let then = self.block()?;
+        let else_ = if self.eat(&Tok::Else) {
+            if self.at(&Tok::If) {
+                Some(Box::new(self.if_expr()?))
+            } else {
+                let espan = self.span();
+                Some(Box::new(Expr { kind: ExprKind::Block(self.block()?), span: espan }))
+            }
+        } else {
+            None
+        };
+        Ok(Expr { kind: ExprKind::If(Box::new(cond), then, else_), span })
+    }
+
+    fn match_expr(&mut self) -> Result<Expr> {
+        let span = self.expect(Tok::Match, "")?.span;
+        let scrutinee = self.with_struct(false, |p| p.expr())?;
+        self.expect(Tok::LBrace, "after `match` value")?;
+        let arms = self.with_struct(true, |p| {
+            let mut arms = Vec::new();
+            while !p.at(&Tok::RBrace) {
+                let pattern = p.pattern()?;
+                let guard = if p.eat(&Tok::If) { Some(p.expr()?) } else { None };
+                p.expect(Tok::FatArrow, "after match pattern")?;
+                let body = if p.at(&Tok::LBrace) {
+                    let b = p.block_expr()?;
+                    p.eat(&Tok::Comma);
+                    b
+                } else {
+                    let b = p.expr()?;
+                    if !p.at(&Tok::RBrace) {
+                        p.expect(Tok::Comma, "after match arm")?;
+                    }
+                    b
+                };
+                arms.push(MatchArm { pattern, guard, body });
+            }
+            Ok(arms)
+        })?;
+        self.expect(Tok::RBrace, "to close `match`")?;
+        if arms.is_empty() {
+            return Err(Error::syntax(span, "`match` needs at least one arm"));
+        }
+        Ok(Expr { kind: ExprKind::Match(Box::new(scrutinee), arms), span })
+    }
+
+    fn pattern(&mut self) -> Result<Pattern> {
+        let first = self.pattern_atom()?;
+        if !self.at(&Tok::Pipe) {
+            return Ok(first);
+        }
+        let mut alts = vec![first];
+        while self.eat(&Tok::Pipe) {
+            alts.push(self.pattern_atom()?);
+        }
+        Ok(Pattern::Or(alts))
+    }
+
+    fn pattern_int(&mut self) -> Result<Option<i64>> {
+        let neg = self.at(&Tok::Minus) && matches!(self.peek_at(1), Tok::Int(_));
+        if neg {
+            self.advance();
+        }
+        match *self.peek() {
+            Tok::Int(n) => {
+                self.advance();
+                Ok(Some(if neg { -n } else { n }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn pattern_atom(&mut self) -> Result<Pattern> {
+        let span = self.span();
+        if let Some(lo) = self.pattern_int()? {
+            let inclusive = if self.eat(&Tok::DotDotEq) {
+                true
+            } else if self.eat(&Tok::DotDot) {
+                false
+            } else {
+                return Ok(Pattern::Int(lo));
+            };
+            let hi = self
+                .pattern_int()?
+                .ok_or_else(|| Error::syntax(self.span(), "expected an integer to end the range pattern"))?;
+            return Ok(Pattern::Range(lo, hi, inclusive));
+        }
+        match self.peek().clone() {
+            Tok::Str(s) => {
+                self.advance();
+                Ok(Pattern::Str(s))
+            }
+            Tok::True => {
+                self.advance();
+                Ok(Pattern::Bool(true))
+            }
+            Tok::False => {
+                self.advance();
+                Ok(Pattern::Bool(false))
+            }
+            Tok::Ident(name) if name == "_" => {
+                self.advance();
+                Ok(Pattern::Wildcard)
+            }
+            Tok::Ident(name) => {
+                self.advance();
+                if !self.eat(&Tok::ColonColon) {
+                    return Ok(Pattern::Bind(name));
+                }
+                let enum_name = self.resolve_self(name, span)?;
+                let (variant, _) = self.ident("variant name")?;
+                let fields = if self.eat(&Tok::LParen) {
+                    Some(self.list(Tok::RParen, "to close pattern", |p| p.pattern())?)
+                } else {
+                    None
+                };
+                Ok(Pattern::Variant { enum_name, variant, fields, span })
+            }
+            other => Err(Error::syntax(span, format!("expected a pattern, found {}", other.describe()))),
+        }
     }
 
     fn primary(&mut self) -> Result<Expr> {
@@ -445,26 +709,46 @@ impl Parser {
                 self.advance();
                 ExprKind::Bool(false)
             }
+            Tok::If | Tok::Match | Tok::Loop | Tok::LBrace => return self.block_expr(),
+            Tok::Return => {
+                self.advance();
+                let value = if self.starts_expr() { Some(Box::new(self.expr()?)) } else { None };
+                ExprKind::Return(value)
+            }
+            Tok::Break => {
+                self.advance();
+                let value = if self.starts_expr() { Some(Box::new(self.expr()?)) } else { None };
+                ExprKind::Break(value)
+            }
+            Tok::Continue => {
+                self.advance();
+                ExprKind::Continue
+            }
             Tok::Ident(name) => {
-                if self.peek_at(1) == &Tok::LParen {
+                if self.peek_at(1) == &Tok::ColonColon {
+                    let ty = self.resolve_self(name, span)?;
+                    self.advance();
+                    self.advance();
+                    let (item, _) = self.ident("name after `::`")?;
+                    if self.at(&Tok::LParen) {
+                        ExprKind::PathCall(ty, item, self.args()?)
+                    } else {
+                        ExprKind::Path(ty, item)
+                    }
+                } else if self.peek_at(1) == &Tok::LParen {
                     self.advance();
                     ExprKind::Call(name, self.args()?)
                 } else if self.looks_like_struct_lit() {
+                    let name = self.resolve_self(name, span)?;
                     self.advance();
                     self.advance(); // {
                     let fields = self.with_struct(true, |p| {
-                        let mut fields: Vec<(String, Expr)> = Vec::new();
-                        while !p.at(&Tok::RBrace) {
+                        p.list(Tok::RBrace, "to close struct literal", |p| {
                             let (fname, _) = p.ident("field name")?;
                             p.expect(Tok::Colon, "after field name")?;
-                            fields.push((fname, p.expr()?));
-                            if !p.eat(&Tok::Comma) {
-                                break;
-                            }
-                        }
-                        Ok(fields)
+                            Ok((fname, p.expr()?))
+                        })
                     })?;
-                    self.expect(Tok::RBrace, "to close struct literal")?;
                     ExprKind::StructLit(name, fields)
                 } else {
                     self.advance();
@@ -479,17 +763,7 @@ impl Parser {
             }
             Tok::LBracket => {
                 self.advance();
-                let elems = self.with_struct(true, |p| {
-                    let mut elems = Vec::new();
-                    while !p.at(&Tok::RBracket) {
-                        elems.push(p.expr()?);
-                        if !p.eat(&Tok::Comma) {
-                            break;
-                        }
-                    }
-                    Ok(elems)
-                })?;
-                self.expect(Tok::RBracket, "to close array literal")?;
+                let elems = self.with_struct(true, |p| p.list(Tok::RBracket, "to close array literal", |p| p.expr()))?;
                 ExprKind::Array(elems)
             }
             other => {

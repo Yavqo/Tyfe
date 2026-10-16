@@ -81,6 +81,13 @@ pub struct Expr {
     pub span: Span,
 }
 
+/// `{ stmts; tail }` — the optional tail expression (no trailing `;`) is the block's value.
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub stmts: Vec<Stmt>,
+    pub tail: Option<Box<Expr>>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Int(i64),
@@ -92,10 +99,43 @@ pub enum ExprKind {
     Unary(UnOp, Box<Expr>),
     Call(String, Vec<Expr>),
     MethodCall(Box<Expr>, String, Vec<Expr>),
+    /// `Type::name` — an enum variant without data.
+    Path(String, String),
+    /// `Type::name(args)` — an enum variant with data, or an associated function.
+    PathCall(String, String, Vec<Expr>),
     Index(Box<Expr>, Box<Expr>),
     Field(Box<Expr>, String),
     Array(Vec<Expr>),
     StructLit(String, Vec<(String, Expr)>),
+    Block(Block),
+    /// `if cond { } else ...` — the else branch is a Block or another If expression.
+    If(Box<Expr>, Block, Option<Box<Expr>>),
+    Match(Box<Expr>, Vec<MatchArm>),
+    Loop(Block),
+    Return(Option<Box<Expr>>),
+    Break(Option<Box<Expr>>),
+    Continue,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Wildcard,
+    Bind(String),
+    Int(i64),
+    Str(String),
+    Bool(bool),
+    /// `lo..hi` or `lo..=hi`
+    Range(i64, i64, bool),
+    /// `Enum::Variant` or `Enum::Variant(p1, p2, ...)`
+    Variant { enum_name: String, variant: String, fields: Option<Vec<Pattern>>, span: Span },
+    Or(Vec<Pattern>),
 }
 
 #[derive(Debug, Clone)]
@@ -119,13 +159,8 @@ pub enum StmtKind {
     Expr(Expr),
     /// REPL only: a trailing expression whose value is printed.
     Echo(Expr),
-    If { cond: Expr, then: Vec<Stmt>, else_: Option<Vec<Stmt>> },
-    While { cond: Expr, body: Vec<Stmt> },
-    For { var: String, iter: ForIter, body: Vec<Stmt> },
-    Return(Option<Expr>),
-    Break,
-    Continue,
-    Block(Vec<Stmt>),
+    While { cond: Expr, body: Block },
+    For { var: String, iter: ForIter, body: Block },
 }
 
 #[derive(Debug, Clone)]
@@ -135,12 +170,24 @@ pub struct Param {
     pub mutable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SelfKind {
+    /// `self` or `mut self`
+    Value { mutable: bool },
+    /// `&self`
+    Ref,
+    /// `&mut self`
+    RefMut,
+}
+
 #[derive(Debug, Clone)]
 pub struct FnDecl {
     pub name: String,
+    /// Set for methods declared inside `impl` that take `self`.
+    pub self_kind: Option<SelfKind>,
     pub params: Vec<Param>,
     pub ret: Type,
-    pub body: Vec<Stmt>,
+    pub body: Block,
     pub span: Span,
 }
 
@@ -152,7 +199,32 @@ pub struct StructDecl {
 }
 
 #[derive(Debug, Clone)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<(String, Vec<Type>)>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImplDecl {
+    pub type_name: String,
+    pub methods: Vec<FnDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstDecl {
+    pub name: String,
+    pub ty: Option<Type>,
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum Item {
     Fn(FnDecl),
     Struct(StructDecl),
+    Enum(EnumDecl),
+    Impl(ImplDecl),
+    Const(ConstDecl),
 }

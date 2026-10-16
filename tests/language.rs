@@ -154,6 +154,84 @@ fn syntax_errors() {
     fails_with("fn main() { 1 = 2; }", "invalid left-hand side");
     fails_with("fn add(a, b) {}", "parameters need a type");
     fails_with("fn main() {} fn main() {}", "defined more than once");
-    fails_with("let x = 1;", "expected `fn` or `struct` at top level");
+    fails_with("let x = 1;", "expected `fn`, `struct`, `enum`, `impl` or `const` at top level");
     fails_with("fn main() { let x = 1 @ 2; }", "unexpected character `@`");
+}
+
+#[test]
+fn impl_methods_and_associated_functions() {
+    let src = "struct Stack { items: [int] }
+    impl Stack {
+        fn new() -> Self { Self { items: [] } }
+        fn push(&mut self, x: int) { self.items.push(x); }
+        fn push_twice(&mut self, x: int) { self.push(x); self.push(x); }
+        fn len(&self) -> int { self.items.len() }
+        fn with(mut self, x: int) -> Stack { self.items.push(x); self }
+    }
+    fn main() {
+        let mut s = Stack::new();
+        s.push_twice(7);
+        let t = s.with(1).with(2);
+        println(\"{} {} {:?}\", s.len(), Stack::len(t), s);
+    }";
+    assert_eq!(ok(src), "2 4 Stack { items: [7, 7] }\n");
+}
+
+#[test]
+fn enums_and_match() {
+    let src = "enum Opt { Some(int), None }
+    fn find(xs: [int], t: int) -> Opt {
+        for i in 0..xs.len() { if xs[i] == t { return Opt::Some(i); } }
+        Opt::None
+    }
+    fn size(n: int) -> str {
+        match n { 0 => \"zero\", 1 | 2 => \"small\", 3..=9 => \"medium\", x if x < 0 => \"negative\", _ => \"big\" }
+    }
+    fn main() {
+        match find([4, 5, 6], 6) { Opt::Some(i) => println(\"at {}\", i), Opt::None => println(\"none\") }
+        println(\"{:?}\", find([], 1));
+        println(\"{} {} {} {} {}\", size(0), size(2), size(5), size(-1), size(50));
+        println(Opt::Some(1) == Opt::Some(1));
+    }";
+    assert_eq!(ok(src), "at 2\nNone\nzero small medium negative big\ntrue\n");
+}
+
+#[test]
+fn expressions_and_implicit_returns() {
+    let src = "const BASE: int = 10;
+    fn pick(c: bool) -> int { if c { BASE } else { BASE * 2 } }
+    fn first_even(xs: [int]) -> int {
+        let mut i = 0;
+        loop {
+            if xs[i] % 2 == 0 { break xs[i]; }
+            i += 1;
+        }
+    }
+    fn classify(x: int) -> str {
+        let s = match x { 0 => return \"early\", _ => \"late\" };
+        s
+    }
+    fn main() {
+        let v = { let a = 2; a * 3 };
+        println(\"{} {} {} {} {} {}\", pick(true), pick(false), first_even([3, 5, 8, 9]), classify(0), classify(1), v);
+    }";
+    assert_eq!(ok(src), "10 20 8 early late 6\n");
+}
+
+#[test]
+fn new_feature_errors() {
+    fails_with("struct C { n: int } impl C { fn f(&self) { self.n = 1; } } fn main() { C { n: 0 }.f(); }", "cannot mutate `self`");
+    fails_with("struct C { n: int } impl C { fn f(&mut self) {} } fn main() { let c = C { n: 0 }; c.f(); }", "cannot mutate immutable variable `c`");
+    fails_with("fn f(x: Foo) {} fn main() {}", "cannot find type `Foo`");
+    fails_with("impl Foo {} fn main() {}", "cannot find type `Foo` to implement");
+    fails_with("enum E { A(int) } fn main() { let e = E::A(); }", "takes 1 value(s) but 0 were given");
+    fails_with("enum E { A } fn main() { let e = E::B; }", "no variant or associated function named `B`");
+    fails_with("fn main() { let x = match 5 { 1 => 1, }; }", "no `match` arm matched the value 5");
+    fails_with("enum E { A(int) } fn main() { match E::A(1) { E::A => {} } }", "has 0 field(s) but the variant has 1");
+    fails_with("const X: int = 1; fn main() { X = 2; }", "cannot assign to constant `X`");
+    fails_with("fn main() { break; }", "outside of a loop");
+    fails_with("fn f() { return 5; } fn main() { f(); }", "should return (), but returned int");
+    fails_with("fn main() { let x = Self::new(); }", "`Self` can only be used inside an `impl` block");
+    fails_with("fn f(&self) {} fn main() {}", "only allowed in `impl` blocks");
+    fails_with("struct C {} impl C { fn new() -> C { C {} } } fn main() { C::new().new(); }", "is an associated function, not a method");
 }

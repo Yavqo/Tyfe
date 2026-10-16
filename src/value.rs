@@ -10,6 +10,8 @@ pub enum Value {
     Array(Vec<Value>),
     /// Struct name and its fields, in declaration order.
     Struct(String, Vec<(String, Value)>),
+    /// Enum name, variant name, and the variant's data.
+    Enum(String, String, Vec<Value>),
     Unit,
 }
 
@@ -24,7 +26,7 @@ impl Value {
                 Some(v) => format!("[{}]", v.type_name()),
                 None => "[]".into(),
             },
-            Value::Struct(name, _) => name.clone(),
+            Value::Struct(name, _) | Value::Enum(name, _, _) => name.clone(),
             Value::Unit => "()".into(),
         }
     }
@@ -38,7 +40,7 @@ impl Value {
             | (Value::Str(_), Type::Str)
             | (Value::Unit, Type::Unit) => true,
             (Value::Array(items), Type::Array(inner)) => items.iter().all(|v| v.matches(inner)),
-            (Value::Struct(name, _), Type::Named(n)) => name == n,
+            (Value::Struct(name, _) | Value::Enum(name, _, _), Type::Named(n)) => name == n,
             _ => false,
         }
     }
@@ -52,6 +54,7 @@ impl Value {
                 _ => true,
             },
             (Value::Struct(a, _), Value::Struct(b, _)) => a == b,
+            (Value::Enum(a, _, _), Value::Enum(b, _, _)) => a == b,
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -67,6 +70,9 @@ impl Value {
             }
             (Value::Struct(n1, f1), Value::Struct(n2, f2)) => {
                 n1 == n2 && f1.iter().zip(f2).all(|((_, x), (_, y))| x.equals(y))
+            }
+            (Value::Enum(e1, v1, d1), Value::Enum(e2, v2, d2)) => {
+                e1 == e2 && v1 == v2 && d1.iter().zip(d2).all(|(x, y)| x.equals(y))
             }
             (Value::Unit, Value::Unit) => true,
             _ => false,
@@ -103,6 +109,13 @@ impl Value {
                 let parts: Vec<String> =
                     fields.iter().map(|(n, v)| format!("{}: {}", n, v.render(true))).collect();
                 format!("{} {{ {} }}", name, parts.join(", "))
+            }
+            Value::Enum(_, variant, data) => {
+                if data.is_empty() {
+                    return variant.clone();
+                }
+                let parts: Vec<String> = data.iter().map(|v| v.render(true)).collect();
+                format!("{}({})", variant, parts.join(", "))
             }
             Value::Unit => "()".into(),
         }

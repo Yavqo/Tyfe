@@ -1,0 +1,62 @@
+// Enums with data, and pattern matching with `match`.
+
+enum Shape {
+    Circle(float),
+    Rect(float, float),
+    Empty,
+}
+
+impl Shape {
+    fn area(&self) -> float {
+        match self {
+            Shape::Circle(r) => 3.14159 * r * r,
+            Shape::Rect(w, h) => w * h,
+            Shape::Empty => 0.0,
+        }
+    }
+}
+
+enum Command {
+    Move(int, int),
+    Say(str),
+    Quit,
+}
+
+fn describe(n: int) -> str {
+    match n {
+        0 => "zero",
+        1 | 2 | 3 => "a few",
+        4..=9 => "several",
+        x if x < 0 => "negative",
+        _ => "lots",
+    }
+}
+
+fn main() {
+    let shapes = [Shape::Circle(1.0), Shape::Rect(2.0, 3.0), Shape::Empty];
+    for s in shapes {
+        println("{:?} has area {}", s, s.area());
+    }
+
+    for n in [0, 2, 7, -5, 100] {
+        println("{} is {}", n, describe(n));
+    }
+
+    let script = [Command::Say("hi"), Command::Move(3, -1), Command::Quit, Command::Say("unreachable")];
+    let mut x = 0;
+    let mut y = 0;
+    for cmd in script {
+        match cmd {
+            Command::Move(dx, dy) => {
+                x += dx;
+                y += dy;
+                println("moved to ({}, {})", x, y);
+            }
+            Command::Say(msg) => println("says: {}", msg),
+            Command::Quit => {
+                println("quitting");
+                break;
+            }
+        }
+    }
+}
