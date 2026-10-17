@@ -1,0 +1,61 @@
+// HashMap and HashSet.
+use std::collections::{HashMap, HashSet};
+
+fn word_counts(text: &str) -> HashMap<String, i64> {
+    let mut counts = HashMap::new();
+    for word in text.split_whitespace() {
+        let w = word.to_lowercase();
+        *counts.entry(w).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn main() {
+    let counts = word_counts("the quick brown fox jumps over the lazy dog The End");
+    println!("{:?}", counts);
+    println!("'the' appears {} times", counts["the"]);
+    match counts.get("cat") {
+        Some(n) => println!("cat: {n}"),
+        None => println!("no cats"),
+    }
+
+    // Most common words, sorted by count then alphabetically.
+    let mut pairs: Vec<(String, i64)> = counts.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    for (word, n) in pairs.iter().take(3) {
+        println!("{word:>6}: {n}");
+    }
+
+    // Grouping with entry().or_insert()
+    let mut by_len: HashMap<i64, Vec<String>> = HashMap::new();
+    for w in ["hi", "yo", "cat", "dog", "bird"] {
+        by_len.entry(w.len() as i64).or_insert(Vec::new()).push(w.to_string());
+    }
+    println!("{:?}", by_len);
+
+    // Updating and removing
+    let mut stock = HashMap::from([("apples", 3), ("pears", 0)]);
+    stock.insert("plums", 7);
+    stock["apples"] += 10;
+    if let Some(old) = stock.remove("pears") {
+        println!("removed pears (had {old})");
+    }
+    for (fruit, n) in &stock {
+        println!("{fruit}: {n}");
+    }
+
+    // Sets
+    let a: HashSet<i64> = HashSet::from([1, 2, 3, 4]);
+    let b: HashSet<i64> = HashSet::from([3, 4, 5]);
+    println!("union {:?}", a.union(&b));
+    println!("intersection {:?}", a.intersection(&b));
+    println!("difference {:?}", a.difference(&b));
+    let input = [1, 5, 2, 5, 1, 9];
+    let mut seen = HashSet::new();
+    for x in input {
+        if !seen.insert(x) {
+            println!("{x} is a duplicate");
+        }
+    }
+    println!("{} unique values, {} in input", seen.len(), input.len());
+}

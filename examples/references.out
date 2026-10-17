@@ -1,0 +1,8 @@
+score = 20
+weights = [0.25, 0.25, 0.5]
+sum of all = 21
+sum of middle = 7
+first three = [1, 2, 3], last two = [5, 6]
+ada has 150
+a = right, b = left
+[[0, 0, 0], [0, 0, 7]]

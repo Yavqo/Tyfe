@@ -1,0 +1,37 @@
+// Run the tests with:  tyfe test examples/testing.ty
+
+fn fizzbuzz(n: i64) -> String {
+    match (n % 3, n % 5) {
+        (0, 0) => "FizzBuzz".to_string(),
+        (0, _) => "Fizz".to_string(),
+        (_, 0) => "Buzz".to_string(),
+        _ => n.to_string(),
+    }
+}
+
+fn is_palindrome(s: &str) -> bool {
+    let clean: Vec<String> = s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
+    let reversed: Vec<String> = clean.iter().rev().collect();
+    clean == reversed
+}
+
+#[test]
+fn fizzbuzz_basics() {
+    assert_eq!(fizzbuzz(3), "Fizz");
+    assert_eq!(fizzbuzz(5), "Buzz");
+    assert_eq!(fizzbuzz(15), "FizzBuzz");
+    assert_eq!(fizzbuzz(7), "7");
+}
+
+#[test]
+fn palindromes() {
+    assert!(is_palindrome("A man, a plan, a canal: Panama"));
+    assert!(!is_palindrome("tyfe"));
+}
+
+fn main() {
+    for n in 1..=15 {
+        print!("{} ", fizzbuzz(n));
+    }
+    println!();
+}

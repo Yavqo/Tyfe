@@ -34,9 +34,10 @@ fn main() {
     println("first > 5: {:?}", nums.find(|n| n > 5));
     println("sorted: {}  max: {:?}", nums.sorted(), nums.max());
 
-    let words = ["banana", "kiwi", "apple", "fig"];
-    println("by length: {:?}", words.sort_by_key(|w| w.len()));
+    let mut words = ["banana", "kiwi", "apple", "fig"];
     println("shortest: {:?}", words.min_by_key(|w| w.len()));
+    words.sort_by_key(|w| w.len());   // sorts in place, like Rust
+    println("by length: {:?}", words);
 
     // Closures can take typed parameters and a block body.
     let describe = |name: str, age: int| -> str {

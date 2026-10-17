@@ -39,7 +39,7 @@ fn main() {
 
     let words = "the quick brown fox".split(" ");
     println("{:?}", words);
-    println("{}", words.reverse().join("-"));
+    println("{}", words.iter().rev().join("-"));
 
     let grid = [[1, 2], [3, 4]];
     println("grid[1][0] = {}", grid[1][0]);

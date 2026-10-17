@@ -1,0 +1,12 @@
+// A program split across files. Run with:  tyfe examples/modules/main.ty
+// `mod shapes;` loads shapes.ty from this folder.
+mod shapes;
+
+use shapes::Rect;
+
+fn main() {
+    let r = Rect::new(3.0, 4.0);
+    println!("{} has area {}", r, r.area());
+    println!("diagonal: {:.1}", shapes::diagonal(&r));
+    println!("unit square area: {}", shapes::UNIT.area());
+}

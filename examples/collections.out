@@ -1,0 +1,16 @@
+{"brown": 1, "dog": 1, "end": 1, "fox": 1, "jumps": 1, "lazy": 1, "over": 1, "quick": 1, "the": 3}
+'the' appears 3 times
+no cats
+   the: 3
+ brown: 1
+   dog: 1
+{2: ["hi", "yo"], 3: ["cat", "dog"], 4: ["bird"]}
+removed pears (had 0)
+apples: 13
+plums: 7
+union {1, 2, 3, 4, 5}
+intersection {3, 4}
+difference {1, 2}
+5 is a duplicate
+1 is a duplicate
+4 unique values, 6 in input

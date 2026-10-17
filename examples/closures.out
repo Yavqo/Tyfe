@@ -8,6 +8,6 @@ sum = 32, total via fold = 32
 any > 8? true  all > 0? true
 first > 5: Some(8)
 sorted: [1, 3, 4, 7, 8, 9]  max: Some(9)
-by length: ["fig", "kiwi", "apple", "banana"]
 shortest: Some("fig")
+by length: ["fig", "kiwi", "apple", "banana"]
 Sam (adult)

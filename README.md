@@ -1,27 +1,36 @@
 # Tyfe
 
-Tyfe is a small programming language with Rust-like syntax. It has `fn`, `let` / `let mut`, type annotations, structs with `impl` methods, enums with `match`, `Option` / `Result` with `?`, closures, tuples and arrays. The goal is to feel like Rust and C++ while staying easy to learn.
+Tyfe is a programming language that looks and feels like Rust: `fn`, `let mut`, structs, enums, `match`, traits, generics, closures, `Option` / `Result` with `?`, `HashMap`, `println!` and more. A lot of everyday Rust code runs in Tyfe unchanged, but there's no borrow checker to fight, so it's easy to learn and quick to experiment with.
 
 ```rust
-struct Point {
-    x: float,
-    y: float,
+use std::collections::HashMap;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+struct Point<T> {
+    x: T,
+    y: T,
 }
 
-fn distance(a: Point, b: Point) -> float {
-    let dx = a.x - b.x;
-    let dy = a.y - b.y;
-    return (dx * dx + dy * dy).sqrt();
+impl<T: fmt::Display> fmt::Display for Point<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
 }
 
 fn main() {
-    let origin = Point { x: 0.0, y: 0.0 };
-    let p = Point { x: 3.0, y: 4.0 };
-    println("distance = {}", distance(origin, p)); // distance = 5.0
+    let p = Point { x: 3, y: 4 };
+    println!("{p} {p:?}");                       // (3, 4) Point { x: 3, y: 4 }
+
+    let mut counts = HashMap::new();
+    for word in "a b a c a".split_whitespace() {
+        *counts.entry(word).or_insert(0) += 1;
+    }
+    println!("{:?}", counts);                     // {"a": 3, "b": 1, "c": 1}
 }
 ```
 
-Tyfe is currently a **tree-walking interpreter written in Rust**. A compiler backend can come later.
+Tyfe is a **tree-walking interpreter written in Rust**.
 
 ## Getting started
 
@@ -29,344 +38,264 @@ You need a Rust toolchain (`cargo`).
 
 ```sh
 cargo build --release
-./target/release/tyfe examples/hello.ty      # run a program
-./target/release/tyfe check examples/arrays.ty   # syntax-check only
-./target/release/tyfe                        # interactive REPL
-cargo test                                   # run the test suite
+./target/release/tyfe examples/hello.ty            # run a program
+./target/release/tyfe examples/hello.ty a b c      # ...with arguments (see args())
+./target/release/tyfe test examples/testing.ty     # run #[test] functions
+./target/release/tyfe check examples/traits.ty     # check without running
+./target/release/tyfe                              # interactive REPL
+cargo test                                         # the interpreter's own tests
 ```
 
-Source files use the `.ty` extension. Every program needs a `fn main()`.
+Source files use the `.ty` extension. Every program needs a `fn main()`. Use the release build for real programs: it is much faster and allows deeper recursion.
+
+## How Tyfe differs from Rust
+
+- **No borrow checker or lifetimes.** Values are copied when you pass or assign them. `&` is accepted and ignored. Lifetimes like `'a` and `'static` are accepted in types.
+- **`&mut` still works.** A `fn f(x: &mut T)` called as `f(&mut x)` really updates `x`. So do `&mut self` methods, `for x in v.iter_mut()`, `for x in &mut v`, `map.get_mut(k).unwrap().push(..)`, `if let Some(x) = map.get_mut(k)` and `*map.entry(k).or_insert(0) += 1`.
+- **Fewer number types.** `int` is a 64-bit signed integer and `float` is 64-bit. Rust names like `i32`, `u8`, `usize` and `f64` are aliases for them. Integer overflow is an error, as in Rust's debug mode.
+- **`char` is a one-character string.** `'a'` and `"a"` are the same value, so `'a' as u8` and `97 as char` both work.
+- **Types are checked while the program runs.** You get clear errors at the exact line, but only when that line runs.
+- **Closures capture copies.** A closure keeps the values it uses from when it was created.
+- **`HashMap` and `HashSet` are kept sorted**, so printing and iterating give the same order every time.
 
 ## Language tour
 
 ### Variables and types
 
 ```rust
-let name = "Tyfe";        // immutable, type inferred (str)
-let year: int = 2026;     // with a type annotation
-let mut count = 0;        // `mut` makes it changeable
-count += 1;               // also -=, *=, /=, %=
+let name = "Tyfe";            // immutable, type inferred
+let year: int = 2026;         // with a type (i64 works too)
+let mut count = 0;            // `mut` makes it changeable
+count += 1;                   // also -= *= /= %= &= |= ^= <<= >>=
+let (a, mut b) = (1, 2);      // destructuring
 ```
 
-| Type        | Example                | Notes                                   |
-|-------------|------------------------|-----------------------------------------|
-| `int`       | `42`, `1_000_000`      | 64-bit signed; overflow is an error     |
-| `float`     | `3.14`                 | 64-bit                                  |
-| `bool`      | `true`, `false`        |                                         |
-| `str`       | `"hi\n"`               | escapes: `\n \t \r \\ \" \0`            |
-| `[T]`       | `[1, 2, 3]`            | arrays; all elements share one type     |
-| `StructName`| `Point { x: 1.0, y: 2.0 }` | user-defined structs                |
-| `EnumName`  | `Shape::Circle(1.0)`   | user-defined enums                      |
-| `(A, B)`    | `(1, "one")`           | tuples                                  |
-| `Option<T>` | `Some(5)`, `None`      | a value that may be missing             |
-| `Result<T, E>` | `Ok(5)`, `Err("bad")` | success or an error                   |
-| `fn(A) -> B` | `\|x\| x + 1`, `square` | closures and functions as values     |
-| `()`        |                        | "nothing", returned by functions with no return type |
+| Type | Example | Notes |
+|---|---|---|
+| `int` / `i64` | `42`, `1_000_000`, `0xFF`, `0b1010`, `7u8` | 64-bit signed |
+| `float` / `f64` | `3.14`, `2.5e3` | 64-bit |
+| `bool` | `true`, `false` | |
+| `str` / `String` / `char` | `"hi\n"`, `'c'`, `'\u{1F600}'` | |
+| `[T]` / `Vec<T>` | `[1, 2]`, `vec![0; 10]` | growable arrays |
+| `(A, B)` | `(1, "one")` | tuples |
+| `Option<T>` | `Some(5)`, `None` | |
+| `Result<T, E>` | `Ok(5)`, `Err("bad")` | |
+| `HashMap<K, V>` | `HashMap::new()` | |
+| `HashSet<T>` | `HashSet::from([1, 2])` | |
+| `fn(A) -> B` | `\|x\| x + 1`, `square` | closures and functions |
+| your structs and enums | `Point { x: 1, y: 2 }` | |
 
-`i64`, `f64` and `String` work as aliases for `int`, `float` and `str`.
-
-Like Rust, Tyfe is strict about types:
-- `int` and `float` never mix implicitly. `1 + 2.0` is an error; write `float(1) + 2.0`.
-- Conditions must be `bool`. `if 1 { }` is an error.
-- A variable keeps its type. `let mut x = 5; x = "hi";` is an error.
-- Assigning to a variable that isn't `mut` is an error.
+Tyfe never mixes types silently. `1 + 2.0` is an error, so write `1 as f64 + 2.0`. Conditions must be `bool`, and a variable keeps its type.
 
 ### Functions
 
-Parameters need types. A return type is optional; leave it out for `()`.
-Like Rust, the last expression without a `;` is the return value.
-
 ```rust
-fn add(a: int, b: int) -> int {
-    a + b               // same as `return a + b;`
+fn add(a: i64, b: i64) -> i64 {
+    a + b                          // last expression = return value
 }
 
-fn greet(name: str) {
-    println("Hi, {}!", name);
-}
-```
+fn largest<T: PartialOrd + Copy>(xs: &[T]) -> T { ... }   // generics
 
-Arguments are passed **by value** (copied). To modify a parameter inside the function, mark it `mut` and return the result:
-
-```rust
-fn double_all(mut xs: [int]) -> [int] {
-    for i in 0..xs.len() {
-        xs[i] *= 2;
-    }
-    return xs;
-}
+fn bump(x: &mut i64) { *x += 1; }  // called as bump(&mut n)
 ```
 
 ### Control flow
 
-```rust
-if x < 0 {
-    println("negative");
-} else if x == 0 {
-    println("zero");
-} else {
-    println("positive");
-}
-
-while n > 0 { n -= 1; }
-
-for i in 0..10 { }       // 0 to 9
-for i in 1..=10 { }      // 1 to 10
-for x in [1, 2, 3] { }   // each element
-for c in "abc" { }       // each character
-
-// `break` and `continue` work in every loop
-```
-
-### Everything is an expression
-
-`if`, `match`, `loop` and `{ blocks }` produce values:
+`if`, `match`, `loop` and blocks are expressions.
 
 ```rust
-let bigger = if a > b { a } else { b };
+let size = if n > 100 { "big" } else { "small" };
 
-let label = {
-    let n = count * 2;
-    format("{} items", n)
-};
-
-// `loop` repeats until `break`, which can carry a value out
-let first_even = loop {
-    if xs[i] % 2 == 0 { break xs[i]; }
-    i += 1;
-};
-```
-
-### Constants
-
-```rust
-const MAX_HP: int = 100;
-const NAME: str = "Tyfe";
-```
-
-### Arrays
-
-```rust
-let mut nums = [5, 3, 8];
-nums.push(1);              // [5, 3, 8, 1]
-nums[0] = 50;
-let last = nums.pop();     // Some(1)  (None if empty)
-println(nums.len());       // 3
-println(nums.contains(8)); // true
-let grid = [[1, 2], [3, 4]];
-println(grid[1][0]);       // 3
-```
-
-Array methods:
-- **basics:** `len`, `is_empty`, `push`, `pop`, `insert(i, x)`, `remove(i)`, `clear`, `contains`, `reverse`, `join(sep)`
-- **safe access** (returns `Option`): `get(i)`, `first`, `last`, `min`, `max`
-- **sorting:** `sort()` (in place), `sorted()`, `sort_by_key(f)`, `min_by_key(f)`, `max_by_key(f)`
-- **with a function:** `map`, `filter`, `fold(init, f)`, `for_each`, `any`, `all`, `count`, `find`, `position`
-- **others:** `sum`, `enumerate`, `zip(other)`
-
-`a + b` joins two arrays. `iter()` and `collect()` are accepted (and do nothing), so Rust-style chains work:
-
-```rust
-let evens_squared = nums.iter().filter(|n| n % 2 == 0).map(|n| n * n).collect();
-```
-
-### Strings
-
-```rust
-let s = "hello" + " world";
-s.len()  s.to_upper()  s.to_lower()  s.trim()  s.contains("lo")
-s.split(" ")  s.chars()  s.reverse()  s[0]
-"42".parse_int()     // Ok(42)   -- returns a Result
-"x".parse_float()    // Err("invalid float: \"x\"")
-```
-
-### Tuples
-
-```rust
-let point = (3, 4);
-println(point.0);                       // 3
-let (x, y) = point;                     // destructuring
-for (i, name) in names.enumerate() { }  // works in `for` too
-
-fn min_max(xs: [int]) -> (int, int) { ... }
-```
-
-### Structs
-
-```rust
-struct Player { name: str, hp: int }
-
-let mut p = Player { name: "Ferris", hp: 70 };
-p.hp += 10;
-println("{:?}", p);   // Player { name: "Ferris", hp: 80 }
-```
-
-### Methods with `impl`
-
-```rust
-struct Counter { count: int }
-
-impl Counter {
-    fn new() -> Self {               // associated function: Counter::new()
-        Self { count: 0 }
-    }
-    fn get(&self) -> int {           // &self: read-only access
-        self.count
-    }
-    fn add(&mut self, n: int) {      // &mut self: may modify
-        self.count += n;
-    }
-    fn doubled(mut self) -> Self {   // self: takes a copy
-        self.count *= 2;
-        self
+'outer: for i in 0..10 {           // labeled loops
+    for j in 0..10 {
+        if i * j == 42 { break 'outer; }
     }
 }
 
-let mut c = Counter::new();
-c.add(5);
-println(c.get());                    // 5
+let found = loop { if done() { break 42; } };
+while let Some(top) = stack.pop() { ... }
+for (i, x) in xs.iter().enumerate() { ... }
+for (key, value) in &map { ... }
 ```
 
-Calling a `&mut self` method needs a `let mut` variable, just like Rust.
-
-### Enums and `match`
-
-Enum variants can carry data:
+### Structs, enums and `match`
 
 ```rust
+#[derive(Debug, Clone, PartialEq)]          // attributes are accepted
+struct Point { x: i64, y: i64 }
+
+let p = Point { x, y };                     // field shorthand
+let q = Point { x: 0, ..p.clone() };        // update syntax
+
 enum Shape {
-    Circle(float),
-    Rect(float, float),
+    Circle(f64),
+    Rect { w: f64, h: f64 },
     Empty,
 }
 
-fn area(s: Shape) -> float {
+fn area(s: &Shape) -> f64 {
     match s {
-        Shape::Circle(r) => 3.14159 * r * r,
-        Shape::Rect(w, h) => w * h,
+        Shape::Circle(r) => 3.14 * r * r,
+        Shape::Rect { w, h } => w * h,
         Shape::Empty => 0.0,
     }
 }
 ```
 
-`match` patterns:
+Patterns include literals, `1..=9`, `'a'..='z'`, `A | B`, `_`, bindings, `mut x`, tuples `(a, _)`, structs `Point { x: 0, .. }`, enum variants, and guards (`x if x > 0`). `matches!(value, pattern)` tests a pattern.
 
-| Pattern | Matches |
-|---|---|
-| `5`, `"hi"`, `true` | that exact value |
-| `1..=9`, `0..10` | an int in the range |
-| `1 \| 2 \| 3` | any of the alternatives |
-| `Shape::Rect(w, h)` | that variant; binds its data to `w`, `h` |
-| `Some(x)`, `None`, `Ok(v)`, `Err(e)` | Option / Result variants |
-| `(a, 0)` | a tuple, element by element |
-| `x` | anything; binds it to `x` |
-| `_` | anything |
-| `x if x > 0` | a pattern plus a guard condition |
-
-If no arm matches, the program stops with an error.
-
-### `Option`, `Result` and `?`
-
-Like Rust, there is no `null`. A value that may be missing is an `Option`, and an operation that can fail returns a `Result`:
+### Methods, traits and generics
 
 ```rust
-fn find(xs: [int], target: int) -> Option<int> {
-    for (i, x) in xs.enumerate() {
-        if x == target { return Some(i); }
+impl Point {
+    fn new(x: i64, y: i64) -> Self { Self { x, y } }
+    fn len2(&self) -> i64 { self.x * self.x + self.y * self.y }
+    fn shift(&mut self, dx: i64) { self.x += dx; }
+}
+
+trait Animal {
+    fn name(&self) -> String;
+    fn greet(&self) -> String {                    // default method
+        format!("Hi, I'm {}", self.name())
     }
-    None
 }
 
-fn divide(a: int, b: int) -> Result<int, str> {
-    if b == 0 { return Err("division by zero"); }
-    Ok(a / b)
-}
+impl Animal for Dog { fn name(&self) -> String { "Rex".into() } }
+
+fn intro(a: &impl Animal) { ... }                  // impl Trait
+fn all(zoo: &Vec<Box<dyn Animal>>) { ... }         // trait objects
+fn show<T: Animal>(a: T) { ... }                   // generic bounds (also `where`)
+impl Animal for i64 { ... }                        // traits on built-in types
 ```
 
-The `?` operator unwraps a `Some`/`Ok`, or returns the `None`/`Err` from the current function straight away:
+To control how `{}` prints your type, implement `fmt::Display` as in Rust, or define `fn to_string(&self) -> String`.
 
-```rust
-fn parse_and_divide(a: str, b: str) -> Result<int, str> {
-    let x = a.parse_int()?;
-    let y = b.parse_int()?;
-    divide(x, y)
-}
-```
-
-`main` can return a `Result` too; an `Err` stops the program with an error message.
-
-Methods: `is_some`, `is_none`, `is_ok`, `is_err`, `unwrap`, `expect(msg)`, `unwrap_or(default)`, `unwrap_or_else(f)`, `map(f)`, `and_then(f)`, `ok()`, `err()`.
-
-### `if let` and `while let`
-
-```rust
-if let Some(i) = find(xs, 7) {
-    println("found at {}", i);
-} else {
-    println("not found");
-}
-
-while let Some(top) = stack.pop() {
-    println(top);
-}
-```
-
-### Closures
+### Closures and iterators
 
 ```rust
 let double = |x| x * 2;
-let add = |a: int, b: int| -> int { a + b };   // types and a return type are optional
+let add = |a: i64, b: i64| -> i64 { a + b };
+fn make_adder(n: i64) -> fn(i64) -> i64 { move |x| x + n }
 
-fn apply_twice(f: fn(int) -> int, x: int) -> int { f(f(x)) }
-apply_twice(double, 5);   // 20
-apply_twice(square, 3);   // named functions work as values too
+let evens: Vec<i64> = nums.iter().filter(|&x| x % 2 == 0).map(|x| x * x).collect();
+let total: i64 = nums.iter().sum();
+people.sort_by(|a, b| b.age.cmp(&a.age).then(a.name.cmp(&b.name)));
+```
 
-fn make_adder(n: int) -> fn(int) -> int {
-    |x| x + n
+Array and iterator methods:
+- `map` `filter` `filter_map` `flat_map` `fold` `reduce` `for_each` `any` `all` `count` `find` `find_map` `position`
+- `take` `skip` `take_while` `skip_while` `step_by` `chain` (via `+`) `zip` `enumerate` `rev` `chunks` `windows` `partition`
+- `sum` `product` `min` `max` `min_by_key` `max_by_key` `min_by` `max_by` `sorted`
+- in place: `sort` `sort_by` `sort_by_key` `retain` `dedup` `reverse` `push` `pop` `insert` `remove` `extend` `truncate` `swap` `clear`
+- `len` `is_empty` `contains` `get` `first` `last` `join` `concat` `flatten` `split_at`
+
+`iter()`, `into_iter()`, `iter_mut()`, `collect()`, `cloned()` and `copied()` are all accepted, so Rust iterator chains work as written.
+
+### `Option`, `Result` and `?`
+
+```rust
+fn parse_pair(a: &str, b: &str) -> Result<(i64, i64), String> {
+    let x = a.parse::<i64>().map_err(|e| format!("bad a: {e}"))?;
+    let y = b.parse::<i64>().map_err(|e| format!("bad b: {e}"))?;
+    Ok((x, y))
 }
 ```
 
-Closures capture a **copy** of the variables they use, at the moment they're created. Changing a captured variable inside a closure doesn't affect the original.
+Methods: `unwrap` `expect` `unwrap_or` `unwrap_or_else` `unwrap_or_default` `map` `map_err` `and_then` `or_else` `ok_or` `ok_or_else` `filter` `map_or` `is_some` `is_none` `is_ok` `is_err` `ok` `err`. `main` may return a `Result`.
+
+### Collections
+
+```rust
+use std::collections::{HashMap, HashSet};
+
+let mut ages = HashMap::new();
+ages.insert("bob", 30);
+ages["amy"] = 25;                              // index assignment inserts
+if let Some(a) = ages.get("bob") { ... }
+*ages.entry("bob").or_insert(0) += 1;
+for (name, age) in &ages { ... }
+
+let a: HashSet<i64> = HashSet::from([1, 2, 3]);
+let both = a.intersection(&b);                 // also union, difference, &a | &b
+```
+
+### Strings
+
+```rust
+let s = String::from("Hello, World");
+s.len()  s.to_uppercase()  s.trim()  s.contains("lo")  s.starts_with("He")
+s.replace("World", "Tyfe")  s.split(", ")  s.split_whitespace()  s.lines()
+s.find("lo")  s.chars().rev().collect::<String>()  &s[0..5]  s.repeat(2)
+"42".parse::<i64>()  'x'.is_alphabetic()  '7'.to_digit(10)
+let mut t = String::new(); t.push_str("abc"); t.push('d');
+```
 
 ### Printing and formatting
 
 ```rust
-println("x = {}, y = {}", x, y);  // {} is a placeholder
-println("{:?}", "quoted");        // {:?} is the debug view: "quoted"
-println("{{literal braces}}");
-print("no newline");
-let s = format("{}-{}", a, b);    // builds a string
+println!("{} + {} = {}", 1, 2, 3);
+println!("Hello {name}, you are {age}");         // inline variables
+println!("{:?} {:#?}", vec![1], point);          // debug
+println!("[{:>8}] [{:<8}] [{:^8}] [{:*^8}]", a, b, c, d);
+println!("{:.2} {:08.3} {:+} {:e}", pi, pi, 5, 1500.0);
+println!("{:x} {:#X} {:#b} {:o}", 255, 255, 5, 8);
+let s = format!("{0}-{1}-{0}", "a", "b");
+eprintln!("to stderr");
 ```
+
+Macros: `println!` `print!` `eprintln!` `eprint!` `format!` `vec!` `panic!` `assert!` `assert_eq!` `assert_ne!` `matches!` `todo!` `unimplemented!` `unreachable!` `dbg!` `write!` `writeln!`.
+
+### Numbers
+
+```rust
+7 as f64 / 2.0    3.9 as i64    'A' as u8    65 as char
+x.abs()  x.pow(3)  x.min(y)  x.clamp(0, 9)  x.rem_euclid(5)  x.checked_add(y)
+f.sqrt() f.floor() f.round() f.sin() f.powf(2.5) f.ln() f.to_degrees()
+6 & 3   6 | 3   6 ^ 3   1 << 10   !0
+i64::MAX   f64::EPSILON   std::f64::consts::PI
+```
+
+### Modules
+
+```rust
+// main.ty
+mod geometry;               // loads geometry.ty (or geometry/mod.ty)
+use geometry::Rect;
+
+fn main() { println!("{}", geometry::area(&Rect::new(2.0, 3.0))); }
+```
+
+All modules share one namespace, so `geometry::area(...)` and `area(...)` both work. `pub` is accepted. Inline `mod name { ... }` blocks work too.
+
+### Tests
+
+```rust
+#[test]
+fn adds() {
+    assert_eq!(add(2, 2), 4);
+}
+```
+
+`tyfe test file.ty` runs every `#[test]` function and prints a report like `cargo test`.
 
 ### Built-in functions
 
-| Function | What it does |
+| | |
 |---|---|
-| `print`, `println`, `eprintln` | print (with optional format string) |
-| `format(fmt, ...)` | format into a `str` |
-| `len(x)` | length of an array or string |
-| `str(x)`, `int(x)`, `float(x)` | conversions (`int("42")` parses) |
-| `input()` / `input("prompt")` | read a line from stdin |
-| `abs`, `sqrt`, `min`, `max` | math (`x.pow(n)` also works) |
-| `assert(cond)`, `assert_eq(a, b)`, `panic(msg)` | checks and errors |
-| `type_of(x)` | the type name as a string |
-
-### Comments
-
-```rust
-// line comment
-/* block comment /* can nest */ */
-```
+| input | `input()` / `input("prompt")` / `read_line()`, `args()` |
+| files | `read_file(path)` and `write_file(path, text)` return `Result`; also `append_file`, `file_exists`, `std::fs::read_to_string` |
+| random & time | `random(lo, hi)` (hi exclusive), `random_float()`, `time_ms()`, `now()`, `sleep(ms)` |
+| other | `exit(code)` / `std::process::exit`, `env_var(name)`, `type_of(x)`, `std::mem::swap(&mut a, &mut b)` |
 
 ## Error messages
 
-Errors point at the exact spot, rustc-style:
+Errors point at the exact spot, rustc-style, including errors inside modules:
 
 ```
-runtime error: cannot mutate immutable variable `x` (declare it with `let mut x`)
- --> examples/oops.ty:3:5
+runtime error: mismatched types: parameter `x` of `g` expects impl Shape, got Dog does not implement the trait `Shape`
+ --> src/zoo.ty:14:5
   |
-3 |     x = 2;
+14 |     g(Dog);
   |     ^
 ```
 
@@ -374,13 +303,13 @@ runtime error: cannot mutate immutable variable `x` (declare it with `let mut x`
 
 ```
 src/
-  main.rs         CLI + REPL
+  main.rs         CLI, module loading, test runner, REPL
   lexer.rs        source text -> tokens
   parser.rs       tokens -> AST (recursive descent)
   ast.rs          syntax tree definitions
   interpreter.rs  runs the AST
   value.rs        runtime values
-  builtins.rs     built-in functions and methods
+  builtins.rs     built-in functions, methods, and formatting
   error.rs        error type + pretty printing
 examples/         sample programs (.ty) and their expected output (.out)
 tests/            integration tests
@@ -388,9 +317,8 @@ tests/            integration tests
 
 ## Roadmap ideas
 
-- traits and generics
-- `HashMap` / dictionaries
-- references (`&`, `&mut`) instead of copy-only arguments
 - a static type checker that runs before the program does
-- a bytecode VM or native compilation for speed
-- modules / `use`
+- real shared references (`Rc<RefCell<T>>` semantics)
+- iterator laziness (infinite ranges, `.iter().take(n)` on huge inputs)
+- a bytecode VM for speed
+- a package manager

@@ -154,7 +154,7 @@ fn syntax_errors() {
     fails_with("fn main() { 1 = 2; }", "invalid left-hand side");
     fails_with("fn add(a, b) {}", "parameters need a type");
     fails_with("fn main() {} fn main() {}", "defined more than once");
-    fails_with("let x = 1;", "expected `fn`, `struct`, `enum`, `impl` or `const` at top level");
+    fails_with("let x = 1;", "expected an item");
     fails_with("fn main() { let x = 1 @ 2; }", "unexpected character `@`");
 }
 
@@ -232,7 +232,7 @@ fn new_feature_errors() {
     fails_with("fn main() { break; }", "outside of a loop");
     fails_with("fn f() { return 5; } fn main() { f(); }", "should return (), but returned int");
     fails_with("fn main() { let x = Self::new(); }", "`Self` can only be used inside an `impl` block");
-    fails_with("fn f(&self) {} fn main() {}", "only allowed in `impl` blocks");
+    fails_with("fn f(&self) {} fn main() {}", "only allowed in `impl` and `trait` blocks");
     fails_with("struct C {} impl C { fn new() -> C { C {} } } fn main() { C::new().new(); }", "is an associated function, not a method");
 }
 
@@ -270,7 +270,9 @@ fn closures_and_function_values() {
         println(xs.iter().filter(|x| x > 1).map(|x| x * 10).collect());
         println(\"{} {} {} {}\", xs.fold(0, |a, b| a + b), xs.any(|x| x == 8), xs.all(|x| x > 1), xs.count(|x| x > 1));
         println(\"{:?} {:?} {:?}\", xs.position(|x| x == 8), xs.sorted(), xs.min());
-        println(\"{:?}\", [\"ccc\", \"a\", \"bb\"].sort_by_key(|s| s.len()));
+        let mut words = [\"ccc\", \"a\", \"bb\"];
+        words.sort_by_key(|s| s.len());
+        println(\"{:?}\", words);
     }";
     assert_eq!(ok(src), "18 81 6 [1, 4]\n[50, 20, 80]\n16 true false 3\nSome(2) [1, 2, 5, 8] Some(1)\n[\"a\", \"bb\", \"ccc\"]\n");
 }
@@ -305,4 +307,197 @@ fn newer_feature_errors() {
     fails_with("fn main() { let f = |a, b| a + b; f(1); }", "closure takes 2 argument(s) but 1 were given");
     fails_with("fn ap(f: fn(int) -> int) -> int { f(1) } fn main() { ap(|a, b| a); }", "expects fn(int) -> int, got fn(_, _)");
     fails_with("fn main() { [1].filter(|x| x); }", "must return a bool");
+}
+
+/// Run the binary with command-line arguments (for files, `tyfe test`, ...).
+fn run_args(args: &[&str]) -> (i32, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_tyfe")).args(args).output().expect("failed to start tyfe");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn macros_and_format_specs() {
+    let src = r#"fn main() {
+        let name = "ty"; let n = 7;
+        println!("{name}:{n:>3}|{:<4}|{:^5}|{:05}|{:+}|{:.2}", "a", "b", 42, 3, 2.0);
+        println!("{0}{1}{0} {2:x} {3:#b} {4:e}", "x", "y", 255, 5, 1500.0);
+        let v = vec![0; 3];
+        let s = format!("{v:?}");
+        assert_eq!(s, "[0, 0, 0]");
+        assert!(s.len() == 9, "len {}", s.len());
+        print!("{}", 'c');
+        println!("{}", '\n' == "\n");
+    }"#;
+    assert_eq!(ok(src), "ty:  7|a   |  b  |00042|+3|2.00\nxyx ff 0b101 1.5e3\nctrue\n");
+}
+
+#[test]
+fn traits_generics_and_display() {
+    let src = r#"use std::fmt;
+    trait Speak { fn word(&self) -> String; fn twice(&self) -> String { format!("{0} {0}", self.word()) } }
+    struct A; struct B { n: i64 }
+    impl Speak for A { fn word(&self) -> String { "a".into() } }
+    impl Speak for B { fn word(&self) -> String { self.n.to_string() } fn twice(&self) -> String { "custom".into() } }
+    fn all(xs: &Vec<Box<dyn Speak>>) -> Vec<String> { xs.iter().map(|x| x.twice()).collect() }
+    fn biggest<T: PartialOrd + Copy>(xs: &[T]) -> T { let mut b = xs[0]; for &x in xs { if x > b { b = x; } } b }
+    struct W<T> { v: T }
+    impl<T: fmt::Display> fmt::Display for W<T> {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "<{}>", self.v) }
+    }
+    impl Speak for i64 { fn word(&self) -> String { format!("int {}", self) } }
+    fn main() {
+        println!("{:?}", all(&vec![Box::new(A), Box::new(B { n: 5 })]));
+        println!("{} {}", biggest(&[1, 9, 3]), biggest(&["x", "b"]));
+        let w = W { v: 2.5 };
+        println!("{} [{:>6}] {}", w, w, w.to_string());
+        println!("{}", 3.twice());
+    }"#;
+    assert_eq!(ok(src), "[\"a a\", \"custom\"]\n9 x\n<2.5> [ <2.5>] <2.5>\nint 3 int 3\n");
+}
+
+#[test]
+fn mutable_references() {
+    let src = "fn inc(x: &mut i64) { *x += 1; }
+    fn fill(v: &mut Vec<i64>, n: i64) { for i in 0..n { v.push(i); } }
+    struct C { n: i64 }
+    fn bump(c: &mut C) { c.n *= 10; }
+    fn main() {
+        let mut a = 1; inc(&mut a); inc(&mut a);
+        let mut v = Vec::new(); fill(&mut v, 3);
+        let mut c = C { n: 2 }; bump(&mut c);
+        let mut arr = [1, 2]; inc(&mut arr[1]);
+        let (mut x, mut y) = (1, 2); std::mem::swap(&mut x, &mut y);
+        println!(\"{a} {v:?} {} {arr:?} {x}{y}\", c.n);
+    }";
+    assert_eq!(ok(src), "3 [0, 1, 2] 20 [1, 3] 21\n");
+}
+
+#[test]
+fn hashmaps_and_sets() {
+    let src = r#"use std::collections::{HashMap, HashSet};
+    fn main() {
+        let mut m = HashMap::new();
+        for w in "b a b c b".split_whitespace() { *m.entry(w).or_insert(0) += 1; }
+        m["z"] = 9;
+        println!("{:?} {} {:?} {:?}", m, m["b"], m.get("q"), m.remove("a"));
+        let mut g: HashMap<i64, Vec<i64>> = HashMap::new();
+        for x in [1, 2, 3, 4] { g.entry(x % 2).or_insert(Vec::new()).push(x); }
+        let total: i64 = g.values().map(|v| v.len() as i64).sum();
+        println!("{:?} {} {:?}", g, total, g.keys());
+        let s: HashSet<i64> = HashSet::from([3, 1, 2]);
+        let t = HashSet::from([2, 5]);
+        println!("{:?} {} {:?} {:?}", s, s.contains(&2), s.union(&t), &s - &t);
+    }"#;
+    assert_eq!(
+        ok(src),
+        "{\"a\": 1, \"b\": 3, \"c\": 1, \"z\": 9} 3 None Some(1)\n{0: [2, 4], 1: [1, 3]} 4 [0, 1]\n{1, 2, 3} true {1, 2, 3, 5} {1, 3}\n"
+    );
+}
+
+#[test]
+fn ranges_slices_casts_and_bits() {
+    let src = r#"fn main() {
+        let xs = [1, 2, 3, 4, 5];
+        println!("{:?} {:?} {:?} {}", &xs[1..3], &xs[..2], &xs[3..], &"hello"[1..=3]);
+        let r: Vec<i64> = (1..=4).rev().collect();
+        println!("{:?} {:?} {}", r, (0..10).step_by(4).collect::<Vec<_>>(), ('a'..'d').collect::<String>());
+        println!("{} {} {} {} {}", 7 as f64 / 2.0, -2.7 as i64, 'a' as u8, 98 as char, true as i64);
+        println!("{} {} {} {} {} {}", 0xF0 & 0x3C, 0b1010 | 1, 6 ^ 3, 1 << 4, -16 >> 2, 1_000_000);
+        println!("{} {}", 2.5e3, 10u8 + 5i64);
+    }"#;
+    assert_eq!(ok(src), "[2, 3] [1, 2] [4, 5] ell\n[4, 3, 2, 1] [0, 4, 8] abc\n3.5 -2 97 b 1\n48 11 5 16 -4 1000000\n2500.0 15\n");
+}
+
+#[test]
+fn labels_patterns_and_struct_sugar() {
+    let src = r#"#[derive(Debug, Clone)]
+    struct P { x: i64, y: i64 }
+    fn main() {
+        let mut hits = 0;
+        'outer: for i in 0..5 {
+            for j in 0..5 {
+                if j > i { continue 'outer; }
+                if i == 3 { break 'outer; }
+                hits += 1;
+            }
+        }
+        let v = 'find: loop { break 'find 99; };
+        let x = 1; let y = 2;
+        let p = P { x, y };
+        let q = P { y: 7, ..p.clone() };
+        let P { x: qx, .. } = q.clone();
+        let kind = match q { P { x: 0, .. } => "on axis", P { y, .. } if y > 5 => "high", _ => "other" };
+        println!("{hits} {v} {:?} {qx} {kind} {}", p, matches!('k', 'a'..='m'));
+    }"#;
+    assert_eq!(ok(src), "6 99 P { x: 1, y: 2 } 1 high true\n");
+}
+
+#[test]
+fn modules_and_test_runner() {
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let (code, out, err) = run_args(&[&format!("{}/examples/modules/main.ty", dir)]);
+    assert_eq!(code, 0, "{}", err);
+    assert!(out.contains("3.0x4.0 rect has area 12.0"), "{}", out);
+
+    let (code, out, _) = run_args(&["test", &format!("{}/examples/testing.ty", dir)]);
+    assert_eq!(code, 0);
+    assert!(out.contains("test result: ok. 2 passed; 0 failed"), "{}", out);
+
+    let failing = std::env::temp_dir().join("tyfe_failing_test.ty");
+    std::fs::write(&failing, "#[test]\nfn good() { assert!(true); }\n#[test]\nfn bad() { assert_eq!(1, 2); }\n").unwrap();
+    let (code, out, err) = run_args(&["test", failing.to_str().unwrap()]);
+    assert_eq!(code, 1);
+    assert!(out.contains("test bad ... FAILED") && out.contains("1 passed; 1 failed"), "{}", out);
+    assert!(err.contains("assertion failed"), "{}", err);
+}
+
+#[test]
+fn batch_three_errors() {
+    fails_with("trait A { fn f(&self); } struct S; impl A for S {} fn main() {}", "is missing the method `f`");
+    fails_with("struct S; impl Nope for S {} fn main() {}", "cannot find trait `Nope`");
+    fails_with("trait A { fn f(&self); } struct T; fn g(x: impl A) {} fn main() { g(T); }", "T does not implement the trait `A`");
+    fails_with("fn inc(x: &mut i64) {} fn main() { let mut n = 1; inc(n); }", "pass a mutable variable like `&mut x`");
+    fails_with("fn main() { loop { break 'nope; } }", "no enclosing loop is labeled `'nope`");
+    fails_with("fn main() { foo!(1); }", "unknown macro `foo!`");
+    fails_with("fn main() { let a = [1]; println!(\"{:?}\", &a[0..5]); }", "out of bounds");
+    fails_with("use std::collections::HashMap; fn main() { let m: HashMap<i64, i64> = HashMap::new(); m[&1]; }", "not found in map");
+    fails_with("fn main() { println!(\"{nope}\"); }", "cannot find variable `nope` used in format string");
+    fails_with("fn main() { println!(\"{}\", 1, 2); }", "is never used");
+    fails_with("fn f() -> i64 { todo!() } fn main() { f(); }", "not yet implemented");
+    fails_with("fn main() { assert_ne!(1, 1); }", "left != right");
+    fails_with("mod nothere; fn main() {}", "cannot find module `nothere`");
+    fails_with("fn main() { let x = 0b; }", "expected digits after `0b`");
+}
+
+#[test]
+fn rust_mutation_idioms_and_named_variants() {
+    let src = r#"use std::collections::HashMap;
+    #[derive(Debug)]
+    enum Msg { Move { x: i64, y: i64 }, Quit }
+    fn main() {
+        let mut v = vec![1, 2, 3];
+        for x in v.iter_mut() { *x *= 10; }
+        for x in &mut v { *x += 1; }
+        *v.last_mut().unwrap() = 0;
+        let mut m: HashMap<&str, Vec<i64>> = HashMap::new();
+        m.insert("a", vec![]);
+        m.get_mut("a").unwrap().push(5);
+        if let Some(list) = m.get_mut("a") { list.push(6); }
+        let mut s = HashMap::from([("x", 1)]);
+        for (_, n) in s.iter_mut() { *n *= 7; }
+        let msgs = [Msg::Move { x: 1, y: 2 }, Msg::Quit];
+        for msg in &msgs {
+            match msg {
+                Msg::Move { x, y: 2 } => println!("move {x}"),
+                Msg::Move { .. } => println!("other move"),
+                Msg::Quit => println!("quit"),
+            }
+        }
+        println!("{:?} {:?} {:?} {:?}", v, m, s, msgs[0]);
+    }"#;
+    assert_eq!(ok(src), "move 1\nquit\n[11, 21, 0] {\"a\": [5, 6]} {\"x\": 7} Move { x: 1, y: 2 }\n");
 }

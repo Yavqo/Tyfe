@@ -1,0 +1,12 @@
+[0, 2, 4, 6, 8] abcde
+3.5 9 65
+00001000 00001110 00000110
+256 15
+'a' is a vowel
+'1' is a digit
+'z' is a consonant
+'!' is a symbol
+found 3 x 8 = 24
+Config { width: 1920, height: 600, title: "main" }
+title = main
+true false

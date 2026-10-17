@@ -1,0 +1,58 @@
+// Ranges, slices, casts, bit operations, char literals, labels, struct sugar.
+
+#[derive(Debug, Clone, PartialEq)]
+struct Config {
+    width: i64,
+    height: i64,
+    title: String,
+}
+
+fn classify(c: char) -> &'static str {
+    match c {
+        'a' | 'e' | 'i' | 'o' | 'u' => "vowel",
+        'a'..='z' => "consonant",
+        '0'..='9' => "digit",
+        _ => "symbol",
+    }
+}
+
+fn main() {
+    // Ranges are values too.
+    let evens: Vec<i64> = (0..10).step_by(2).collect();
+    let letters: String = ('a'..='e').collect::<String>();
+    println!("{:?} {}", evens, letters);
+
+    // Casts and bit operations
+    let x = 7;
+    println!("{} {} {}", x as f64 / 2.0, 9.99 as i64, 'A' as u8);
+    println!("{:08b} {:08b} {:08b}", 0b1100 & 0b1010, 0b1100 | 0b1010, 0b1100 ^ 0b1010);
+    println!("{} {}", 1 << 8, 0xFF >> 4);
+
+    // Characters
+    for c in "a1z!".chars() {
+        println!("'{}' is a {}", c, classify(c));
+    }
+
+    // Labeled loops
+    'search: for i in 1..10 {
+        for j in 1..10 {
+            if i * j == 24 && i < j {
+                println!("found {} x {} = 24", i, j);
+                break 'search;
+            }
+        }
+    }
+
+    // Struct field shorthand and update syntax
+    let width = 800;
+    let height = 600;
+    let base = Config { width, height, title: "main".to_string() };
+    let wide = Config { width: 1920, ..base.clone() };
+    println!("{:?}", wide);
+    let Config { title, .. } = base;
+    println!("title = {title}");
+
+    // matches! and if-let chains
+    let n = 42;
+    println!("{} {}", matches!(n, 40..=50), matches!(Some(n), Some(v) if v % 2 == 1));
+}

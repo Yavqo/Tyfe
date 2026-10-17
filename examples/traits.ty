@@ -1,0 +1,78 @@
+// Traits, trait objects, generics and Display.
+use std::fmt;
+
+trait Animal {
+    fn name(&self) -> String;
+    fn sound(&self) -> String;
+
+    // A default method: implementors get it for free.
+    fn speak(&self) -> String {
+        format!("{} says {}", self.name(), self.sound())
+    }
+}
+
+struct Dog;
+struct Cat { lives: i64 }
+
+impl Animal for Dog {
+    fn name(&self) -> String { "Dog".to_string() }
+    fn sound(&self) -> String { "woof".to_string() }
+}
+
+impl Animal for Cat {
+    fn name(&self) -> String { format!("Cat ({} lives)", self.lives) }
+    fn sound(&self) -> String { "meow".to_string() }
+    fn speak(&self) -> String { format!("{} purrs", self.name()) }
+}
+
+// Static dispatch with a generic bound...
+fn introduce<T: Animal>(animal: &T) {
+    println!("Meet: {}", animal.name());
+}
+
+// ...or dynamic dispatch with `dyn`.
+fn chorus(animals: &Vec<Box<dyn Animal>>) {
+    for a in animals {
+        println!("{}", a.speak());
+    }
+}
+
+// Generic function over anything comparable.
+fn largest<T: PartialOrd + Copy>(items: &[T]) -> T {
+    let mut best = items[0];
+    for &item in items {
+        if item > best {
+            best = item;
+        }
+    }
+    best
+}
+
+// A generic struct with a Display implementation.
+#[derive(Debug, Clone)]
+struct Point<T> {
+    x: T,
+    y: T,
+}
+
+impl<T: fmt::Display> fmt::Display for Point<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+
+fn main() {
+    introduce(&Dog);
+    let zoo: Vec<Box<dyn Animal>> = vec![Box::new(Dog), Box::new(Cat { lives: 9 })];
+    chorus(&zoo);
+
+    println!("largest int: {}", largest(&[3, 17, 8]));
+    println!("largest float: {}", largest(&[2.5, 0.5]));
+    println!("largest str: {}", largest(&["pear", "apple", "zucchini"]));
+
+    let p = Point { x: 3, y: 4 };
+    let q = Point { x: 1.5, y: -2.0 };
+    println!("Display: {} and {}", p, q);
+    println!("Debug:   {:?}", p);
+    println!("Padded:  [{:>12}]", p.to_string());
+}

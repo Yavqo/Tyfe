@@ -5,6 +5,12 @@ use std::rc::Rc;
 pub struct Span {
     pub line: usize,
     pub col: usize,
+    /// Index of the source file (0 = the main file; modules get their own).
+    pub file: u16,
+}
+
+impl Span {
+    pub const NONE: Span = Span { line: 0, col: 0, file: 0 };
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +27,14 @@ pub enum Type {
     /// `fn(int, str) -> bool`
     Fn(Vec<Type>, Box<Type>),
     Named(String),
+    /// `HashMap<K, V>`
+    Map(Box<Type>, Box<Type>),
+    /// `HashSet<T>`
+    Set(Box<Type>),
+    /// A generic parameter `T` with its trait bounds (`T: Display + Clone`).
+    Generic(String, Vec<String>),
+    /// `impl Trait` / `dyn Trait` / `&dyn A + B`
+    Trait(Vec<String>),
     /// Internal: the payload type of the built-in `Option` / `Result` enums.
     Any,
 }
@@ -45,6 +59,10 @@ impl fmt::Display for Type {
                 write!(f, "fn({}) -> {}", parts.join(", "), ret)
             }
             Type::Named(n) => write!(f, "{}", n),
+            Type::Map(k, v) => write!(f, "HashMap<{}, {}>", k, v),
+            Type::Set(t) => write!(f, "HashSet<{}>", t),
+            Type::Generic(n, _) => write!(f, "{}", n),
+            Type::Trait(ts) => write!(f, "impl {}", ts.join(" + ")),
             Type::Any => write!(f, "_"),
         }
     }
@@ -65,6 +83,11 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl fmt::Display for BinOp {
@@ -83,6 +106,11 @@ impl fmt::Display for BinOp {
             BinOp::Ge => ">=",
             BinOp::And => "&&",
             BinOp::Or => "||",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
         };
         write!(f, "{}", s)
     }
@@ -92,6 +120,8 @@ impl fmt::Display for BinOp {
 pub enum UnOp {
     Neg,
     Not,
+    /// `*x` — values are copies, so this just reads `x`.
+    Deref,
 }
 
 #[derive(Debug, Clone)]
@@ -125,15 +155,17 @@ pub enum ExprKind {
     Index(Box<Expr>, Box<Expr>),
     Field(Box<Expr>, String),
     Array(Vec<Expr>),
-    StructLit(String, Vec<(String, Expr)>),
+    /// `Name { field: value, ..base }`
+    StructLit(String, Vec<(String, Expr)>, Option<Box<Expr>>),
     Block(Block),
     /// `if cond { } else ...` — the else branch is a Block or another If expression.
     If(Box<Expr>, Block, Option<Box<Expr>>),
     Match(Box<Expr>, Vec<MatchArm>),
-    Loop(Block),
+    Loop(Block, Option<String>),
     Return(Option<Box<Expr>>),
-    Break(Option<Box<Expr>>),
-    Continue,
+    /// `break 'label value`
+    Break(Option<String>, Option<Box<Expr>>),
+    Continue(Option<String>),
     /// `()`
     Unit,
     /// `(a, b, ...)`
@@ -148,6 +180,16 @@ pub enum ExprKind {
     Try(Box<Expr>),
     /// `if let PATTERN = value { } else ...`
     IfLet(Box<Pattern>, Box<Expr>, Block, Option<Box<Expr>>),
+    /// `&x` / `&mut x`
+    Ref(bool, Box<Expr>),
+    /// `x as float`
+    Cast(Box<Expr>, Type),
+    /// `a..b`, `a..=b`, `a..`, `..b`
+    Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
+    /// `matches!(value, pattern)` or `matches!(value, pattern if guard)`
+    Matches(Box<Expr>, Box<Pattern>, Option<Box<Expr>>),
+    /// `[value; count]`
+    ArrayRepeat(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -170,14 +212,20 @@ pub struct MatchArm {
 pub enum Pattern {
     Wildcard,
     Bind(String),
+    /// `mut x` inside a pattern, e.g. `let (mut a, b) = ...`
+    MutBind(String),
     Int(i64),
     Str(String),
     Bool(bool),
     /// `lo..hi` or `lo..=hi`
     Range(i64, i64, bool),
+    /// `'a'..='z'`
+    CharRange(char, char, bool),
     /// `Enum::Variant` or `Enum::Variant(p1, p2, ...)`
     Variant { enum_name: String, variant: String, fields: Option<Vec<Pattern>>, span: Span },
     Tuple(Vec<Pattern>),
+    /// `Point { x, y: 0, .. }`
+    Struct(String, Vec<(String, Pattern)>, Span),
     Or(Vec<Pattern>),
 }
 
@@ -202,9 +250,9 @@ pub enum StmtKind {
     Expr(Expr),
     /// REPL only: a trailing expression whose value is printed.
     Echo(Expr),
-    While { cond: Expr, body: Block },
-    WhileLet { pattern: Pattern, value: Expr, body: Block },
-    For { pattern: Pattern, iter: ForIter, body: Block },
+    While { cond: Expr, body: Block, label: Option<String> },
+    WhileLet { pattern: Pattern, value: Expr, body: Block, label: Option<String> },
+    For { pattern: Pattern, iter: ForIter, body: Block, label: Option<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +260,8 @@ pub struct Param {
     pub name: String,
     pub ty: Type,
     pub mutable: bool,
+    /// `x: &mut T` — the caller passes `&mut place` and sees the changes.
+    pub by_ref_mut: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -233,6 +283,8 @@ pub struct FnDecl {
     pub ret: Type,
     pub body: Block,
     pub span: Span,
+    /// Marked `#[test]`; run by `tyfe test`.
+    pub is_test: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -246,12 +298,16 @@ pub struct StructDecl {
 pub struct EnumDecl {
     pub name: String,
     pub variants: Vec<(String, Vec<Type>)>,
+    /// Field names of struct-like variants, e.g. `Move { x: int, y: int }`.
+    pub named: Vec<(String, Vec<String>)>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct ImplDecl {
     pub type_name: String,
+    /// `impl Trait for Type`
+    pub trait_name: Option<String>,
     pub methods: Vec<FnDecl>,
     pub span: Span,
 }
@@ -265,10 +321,23 @@ pub struct ConstDecl {
 }
 
 #[derive(Debug, Clone)]
+pub struct TraitDecl {
+    pub name: String,
+    /// Methods every implementor must define.
+    pub required: Vec<String>,
+    /// Methods with a default body.
+    pub defaults: Vec<FnDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum Item {
     Fn(FnDecl),
     Struct(StructDecl),
     Enum(EnumDecl),
     Impl(ImplDecl),
     Const(ConstDecl),
+    Trait(TraitDecl),
+    /// `mod name;` — loads `name.ty` next to the current file.
+    Mod(String, Span),
 }

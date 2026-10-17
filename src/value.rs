@@ -1,5 +1,6 @@
 use crate::ast::{ClosureDef, FnDecl, Type};
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -39,7 +40,109 @@ pub enum Value {
     Enum(String, String, Vec<Value>),
     Tuple(Vec<Value>),
     Func(Callable),
+    /// `HashMap` (kept sorted by key, so printing and iteration are predictable)
+    Map(BTreeMap<Key, Value>),
+    /// `HashSet` (kept sorted)
+    Set(BTreeSet<Key>),
     Unit,
+}
+
+/// A map/set key: any value, ordered by `total_cmp`.
+#[derive(Debug, Clone)]
+pub struct Key(pub Value);
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        total_cmp(&self.0, &other.0) == Ordering::Equal
+    }
+}
+
+impl Eq for Key {}
+
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> Ordering {
+        total_cmp(&self.0, &other.0)
+    }
+}
+
+/// A total order over all values (used for map keys).
+pub fn total_cmp(a: &Value, b: &Value) -> Ordering {
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Unit => 0,
+            Value::Bool(_) => 1,
+            Value::Int(_) => 2,
+            Value::Float(_) => 3,
+            Value::Str(_) => 4,
+            Value::Tuple(_) => 5,
+            Value::Array(_) => 6,
+            Value::Enum(..) => 7,
+            Value::Struct(..) => 8,
+            Value::Map(_) => 9,
+            Value::Set(_) => 10,
+            Value::Func(_) => 11,
+        }
+    }
+    fn seq(x: &[Value], y: &[Value]) -> Ordering {
+        for (p, q) in x.iter().zip(y) {
+            match total_cmp(p, q) {
+                Ordering::Equal => continue,
+                o => return o,
+            }
+        }
+        x.len().cmp(&y.len())
+    }
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Float(x), Value::Float(y)) => x.total_cmp(y),
+        (Value::Str(x), Value::Str(y)) => x.cmp(y),
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        (Value::Tuple(x), Value::Tuple(y)) | (Value::Array(x), Value::Array(y)) => seq(x, y),
+        (Value::Enum(e1, v1, d1), Value::Enum(e2, v2, d2)) => e1.cmp(e2).then(v1.cmp(v2)).then_with(|| seq(d1, d2)),
+        (Value::Struct(n1, f1), Value::Struct(n2, f2)) => n1.cmp(n2).then_with(|| {
+            let a: Vec<Value> = f1.iter().map(|(_, v)| v.clone()).collect();
+            let b: Vec<Value> = f2.iter().map(|(_, v)| v.clone()).collect();
+            seq(&a, &b)
+        }),
+        (Value::Map(x), Value::Map(y)) => x.iter().cmp_by_key(y.iter()),
+        (Value::Set(x), Value::Set(y)) => x.cmp(y),
+        _ => rank(a).cmp(&rank(b)),
+    }
+}
+
+trait CmpByKey<'a> {
+    fn cmp_by_key(self, other: Self) -> Ordering;
+}
+
+impl<'a, I: Iterator<Item = (&'a Key, &'a Value)>> CmpByKey<'a> for I {
+    fn cmp_by_key(mut self, mut other: Self) -> Ordering {
+        loop {
+            match (self.next(), other.next()) {
+                (None, None) => return Ordering::Equal,
+                (None, Some(_)) => return Ordering::Less,
+                (Some(_), None) => return Ordering::Greater,
+                (Some((k1, v1)), Some((k2, v2))) => match k1.cmp(k2).then_with(|| total_cmp(v1, v2)) {
+                    Ordering::Equal => continue,
+                    o => return o,
+                },
+            }
+        }
+    }
+}
+
+pub fn ordering(o: Ordering) -> Value {
+    let name = match o {
+        Ordering::Less => "Less",
+        Ordering::Equal => "Equal",
+        Ordering::Greater => "Greater",
+    };
+    Value::Enum("Ordering".into(), name.into(), vec![])
 }
 
 pub fn some(v: Value) -> Value {
@@ -87,6 +190,14 @@ impl Value {
                 format!("({})", parts.join(", "))
             }
             Value::Func(f) => format!("fn({})", vec!["_"; f.arity()].join(", ")),
+            Value::Map(m) => match m.iter().next() {
+                Some((k, v)) => format!("HashMap<{}, {}>", k.0.type_name(), v.type_name()),
+                None => "HashMap<_, _>".into(),
+            },
+            Value::Set(s) => match s.iter().next() {
+                Some(k) => format!("HashSet<{}>", k.0.type_name()),
+                None => "HashSet<_>".into(),
+            },
             Value::Unit => "()".into(),
         }
     }
@@ -112,6 +223,10 @@ impl Value {
                 data.iter().all(|v| v.matches(inner))
             }
             (Value::Func(f), Type::Fn(params, _)) => f.arity() == params.len(),
+            (Value::Map(m), Type::Map(kt, vt)) => m.iter().all(|(k, v)| k.0.matches(kt) && v.matches(vt)),
+            (Value::Set(s), Type::Set(t)) => s.iter().all(|k| k.0.matches(t)),
+            // Trait bounds are checked by the interpreter, which knows the impls.
+            (_, Type::Generic(..) | Type::Trait(_)) => true,
             (_, Type::Any) => true,
             _ => false,
         }
@@ -148,6 +263,10 @@ impl Value {
                 e1 == e2 && v1 == v2 && d1.iter().zip(d2).all(|(x, y)| x.equals(y))
             }
             (Value::Tuple(a), Value::Tuple(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.equals(y)),
+            (Value::Map(a), Value::Map(b)) => {
+                a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| v.equals(w)))
+            }
+            (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Unit, Value::Unit) => true,
             _ => false,
         }
@@ -188,6 +307,12 @@ impl Value {
                 if data.is_empty() {
                     return variant.clone();
                 }
+                // Struct-like variant: `Move { x: 1, y: 2 }`
+                if let [inner @ Value::Struct(name, _)] = data.as_slice() {
+                    if name == variant {
+                        return inner.render(true);
+                    }
+                }
                 let parts: Vec<String> = data.iter().map(|v| v.render(true)).collect();
                 format!("{}({})", variant, parts.join(", "))
             }
@@ -201,6 +326,14 @@ impl Value {
             }
             Value::Func(Callable::Named(f)) => format!("<fn {}>", f.name),
             Value::Func(Callable::Closure(_)) => "<closure>".into(),
+            Value::Map(m) => {
+                let parts: Vec<String> = m.iter().map(|(k, v)| format!("{}: {}", k.0.render(true), v.render(true))).collect();
+                format!("{{{}}}", parts.join(", "))
+            }
+            Value::Set(s) => {
+                let parts: Vec<String> = s.iter().map(|k| k.0.render(true)).collect();
+                format!("{{{}}}", parts.join(", "))
+            }
             Value::Unit => "()".into(),
         }
     }

@@ -1,0 +1,13 @@
+Hello from Tyfe v3!
+2 + 2 = 4
+tick tock tick
+"quoted" vs plain
+[a       ] [b       ] [   c    ] [       d]
+[**center***] [0003.142] [+42]
+3.14 3 1.5e6
+hex ff 0xFF, binary 0b1010, octal 10
+fruit   | qty|  price
+apples  |   3|   0.50
+kiwis   |  12|   0.25
+melons  |   1|   3.00
+[1, 2, 3] -> [1, 4, 9]

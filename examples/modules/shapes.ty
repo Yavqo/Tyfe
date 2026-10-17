@@ -1,0 +1,28 @@
+use std::fmt;
+
+pub struct Rect {
+    pub w: f64,
+    pub h: f64,
+}
+
+pub const UNIT: Rect = Rect { w: 1.0, h: 1.0 };
+
+impl Rect {
+    pub fn new(w: f64, h: f64) -> Rect {
+        Rect { w, h }
+    }
+
+    pub fn area(&self) -> f64 {
+        self.w * self.h
+    }
+}
+
+impl fmt::Display for Rect {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}x{} rect", self.w, self.h)
+    }
+}
+
+pub fn diagonal(r: &Rect) -> f64 {
+    (r.w * r.w + r.h * r.h).sqrt()
+}

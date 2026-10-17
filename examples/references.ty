@@ -1,0 +1,55 @@
+// `&mut` parameters, slices, and swapping.
+
+fn add_bonus(score: &mut i64, bonus: i64) {
+    *score += bonus;
+}
+
+fn normalize(values: &mut Vec<f64>) {
+    let total: f64 = values.iter().sum();
+    for i in 0..values.len() {
+        values[i] = values[i] / total;
+    }
+}
+
+fn sum(xs: &[i64]) -> i64 {
+    xs.iter().sum()
+}
+
+struct Account {
+    owner: String,
+    balance: i64,
+}
+
+fn deposit(acct: &mut Account, amount: i64) {
+    acct.balance += amount;
+}
+
+fn main() {
+    let mut score = 10;
+    add_bonus(&mut score, 5);
+    add_bonus(&mut score, 5);
+    println!("score = {score}");
+
+    let mut weights = vec![1.0, 1.0, 2.0];
+    normalize(&mut weights);
+    println!("weights = {:?}", weights);
+
+    let data = [1, 2, 3, 4, 5, 6];
+    println!("sum of all = {}", sum(&data));
+    println!("sum of middle = {}", sum(&data[2..4]));
+    println!("first three = {:?}, last two = {:?}", &data[..3], &data[4..]);
+
+    let mut acct = Account { owner: String::from("ada"), balance: 0 };
+    deposit(&mut acct, 100);
+    deposit(&mut acct, 50);
+    println!("{} has {}", acct.owner, acct.balance);
+
+    let mut a = "left";
+    let mut b = "right";
+    std::mem::swap(&mut a, &mut b);
+    println!("a = {a}, b = {b}");
+
+    let mut grid = vec![vec![0; 3]; 2];
+    grid[1][2] = 7;
+    println!("{:?}", grid);
+}
